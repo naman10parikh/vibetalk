@@ -19,7 +19,7 @@ Vibe Talk is a Cursor extension that lets you speak your coding requests instead
 
 ```bash
 # Clone the repository
-git clone https://github.com/yourusername/vibetalk.git
+git clone https://github.com/naman10parikh/vibetalk.git
 cd vibetalk
 
 # Install dependencies (coming soon)
