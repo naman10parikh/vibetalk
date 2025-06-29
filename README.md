@@ -13,7 +13,14 @@ Vibe Talk is a Cursor extension that lets you speak your coding requests instead
 
 ## 🏗️ Project Status
 
-**Currently in Development** - See [spec.md](./spec.md) for detailed technical specifications.
+**✅ MVP COMPLETE!** The core functionality is working:
+
+- ✅ **Audio Recording**: Records crystal-clear audio using macOS native tools
+- ✅ **Speech-to-Text**: OpenAI Whisper integration ready for transcription  
+- ✅ **Cursor Automation**: Successfully injects text into Cursor's Composer
+- ✅ **End-to-End Workflow**: Voice → Transcription → Cursor integration
+
+**🚀 Ready for Testing!** See [SETUP.md](./SETUP.md) for installation instructions.
 
 ## 🚀 Quick Start
 
