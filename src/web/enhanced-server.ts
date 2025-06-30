@@ -19,34 +19,44 @@ const audioRecorder = new AudioRecorder();
 const whisperClient = config.isValid() ? new WhisperClient(config.openaiApiKey) : null;
 const cursorAutomator = new CursorAutomator();
 
-// Simple state management
+// Enhanced state management
 let currentConnections = new Set<any>();
 let isRecording = false;
+let sessionId = '';
 
 // Ports
 const HTTP_PORT = process.env.PORT ? parseInt(process.env.PORT) : 3000;
 const WS_PORT = process.env.WS_PORT ? parseInt(process.env.WS_PORT) : HTTP_PORT + 1;
 
-// Enhanced message broadcasting
+// Enhanced message broadcasting with detailed status
 function broadcastToClients(message: any): void {
-  const messageStr = JSON.stringify(message);
+  const enhancedMessage = {
+    ...message,
+    timestamp: Date.now(),
+    sessionId: sessionId
+  };
+  
+  const messageStr = JSON.stringify(enhancedMessage);
   currentConnections.forEach(ws => {
     if (ws.readyState === ws.OPEN) {
       ws.send(messageStr);
     }
   });
+  
+  // Log detailed status for debugging
+  console.log(`📡 Broadcasting: ${message.type} - ${message.message || message.status}`);
 }
 
-// Restored auto-refresh functionality (this was working before!)
-class SimpleAutoRefresh {
+// Enhanced auto-refresh with detailed progress
+class EnhancedAutoRefresh {
   private connections = new Set<any>();
   private lastMTime = 0;
   private building = false;
 
   constructor() {
     this.updateMTime();
-    setInterval(() => this.check(), 1000);
-    console.log('🔍 Watching for changes in src/web/index.html...');
+    setInterval(() => this.check(), 800); // Faster checking
+    console.log('🔍 Enhanced file watching active...');
   }
 
   addConnection(ws: any) {
@@ -66,21 +76,68 @@ class SimpleAutoRefresh {
       const p = path.join(process.cwd(), 'src/web/index.html');
       const st = fs.statSync(p).mtimeMs;
       if (st > this.lastMTime) {
-        console.log('📁 File change detected, rebuilding...');
+        console.log('📁 Change detected - starting enhanced rebuild...');
         this.lastMTime = st;
         this.building = true;
         
-        // Broadcast that we're rebuilding
+        // Step 1: Notify of change detection
         this.connections.forEach(ws => {
           if (ws.readyState === ws.OPEN) {
-            ws.send(JSON.stringify({ type: 'status', message: '🔄 Changes detected, refreshing...' }));
+            ws.send(JSON.stringify({ 
+              type: 'progress', 
+              step: 'changes-detected',
+              message: '📁 Changes detected in source files',
+              progress: 25
+            }));
+          }
+        });
+        
+        await this.sleep(300);
+        
+        // Step 2: Building
+        this.connections.forEach(ws => {
+          if (ws.readyState === ws.OPEN) {
+            ws.send(JSON.stringify({ 
+              type: 'progress', 
+              step: 'building',
+              message: '🔨 Rebuilding project with your changes',
+              progress: 50
+            }));
           }
         });
         
         await execAsync('npm run build');
-        console.log('🔄 Sending refresh signal to all clients...');
+        await this.sleep(200);
         
-        // Send refresh signal
+        // Step 3: Preparing refresh
+        this.connections.forEach(ws => {
+          if (ws.readyState === ws.OPEN) {
+            ws.send(JSON.stringify({ 
+              type: 'progress', 
+              step: 'preparing-refresh',
+              message: '🔄 Preparing to refresh your page',
+              progress: 75
+            }));
+          }
+        });
+        
+        await this.sleep(500);
+        
+        // Step 4: Refreshing
+        this.connections.forEach(ws => {
+          if (ws.readyState === ws.OPEN) {
+            ws.send(JSON.stringify({ 
+              type: 'progress', 
+              step: 'refreshing',
+              message: '✨ Refreshing page with changes',
+              progress: 100
+            }));
+          }
+        });
+        
+        await this.sleep(300);
+        
+        // Final refresh
         this.connections.forEach(ws => {
           if (ws.readyState === ws.OPEN) {
             ws.send(JSON.stringify({ type: 'refresh-now' }));
@@ -88,51 +145,98 @@ class SimpleAutoRefresh {
         });
         
         this.building = false;
+        console.log('✅ Enhanced rebuild complete');
       }
     } catch (error) {
-      console.error('❌ Auto-refresh error:', error);
+      console.error('❌ Enhanced auto-refresh error:', error);
       this.building = false;
     }
   }
+  
+  private sleep(ms: number): Promise<void> {
+    return new Promise(resolve => setTimeout(resolve, ms));
+  }
 }
 
-// Enhanced voice command handler with proper success detection
+// Enhanced voice command handler with detailed progress
 async function handleVoiceCommand(action: 'start' | 'stop'): Promise<void> {
   if (action === 'start' && !isRecording) {
     try {
-      console.log('🎤 Starting voice recording...');
+      sessionId = `session_${Date.now()}`;
+      console.log(`🎤 Starting enhanced voice session: ${sessionId}`);
       isRecording = true;
-      broadcastToClients({ type: 'status', message: '🎤 Listening... Speak your command clearly' });
+      
+      // Step 1: Initializing
+      broadcastToClients({ 
+        type: 'voice-status', 
+        step: 'initializing',
+        message: '🎤 Initializing voice recording',
+        status: 'listening-start'
+      });
       
       await audioRecorder.startRecording();
-      console.log('✅ Voice recording started');
+      await sleep(200);
+      
+      // Step 2: Active listening
+      broadcastToClients({ 
+        type: 'voice-status', 
+        step: 'listening',
+        message: '👂 Listening - speak your command clearly',
+        status: 'listening-active'
+      });
+      
+      console.log('✅ Enhanced voice recording started');
       
     } catch (error) {
-      console.error('❌ Failed to start recording:', error);
+      console.error('❌ Failed to start enhanced recording:', error);
       isRecording = false;
-      broadcastToClients({ type: 'error', message: 'Failed to start recording. Check microphone permissions.' });
+      broadcastToClients({ 
+        type: 'error', 
+        message: 'Failed to start recording. Please check microphone permissions.',
+        step: 'error'
+      });
     }
     
   } else if (action === 'stop' && isRecording) {
     try {
-      console.log('⏹️ Stopping voice recording...');
-      broadcastToClients({ type: 'status', message: '⏸️ Processing audio...' });
+      console.log('⏹️ Stopping enhanced voice recording...');
+      
+      // Step 1: Processing audio
+      broadcastToClients({ 
+        type: 'voice-status', 
+        step: 'processing',
+        message: '⏸️ Processing your voice input',
+        status: 'processing'
+      });
       
       const audioPath = await audioRecorder.stopRecording();
       isRecording = false;
       
       if (!audioPath) {
-        console.error('❌ No audio file created');
-        broadcastToClients({ type: 'error', message: 'No audio recorded. Please try again.' });
+        broadcastToClients({ 
+          type: 'error', 
+          message: 'No audio captured. Please try speaking again.',
+          step: 'error'
+        });
         return;
       }
 
-      console.log('🧠 Transcribing audio...');
-      broadcastToClients({ type: 'status', message: '🧠 Converting speech to text...' });
+      await sleep(300);
+      
+      // Step 2: Transcribing
+      broadcastToClients({ 
+        type: 'voice-status', 
+        step: 'transcribing',
+        message: '🧠 Converting speech to text with AI',
+        status: 'transcribing'
+      });
       
       if (!config.isValid() || !whisperClient) {
-        console.error('❌ OpenAI API key not configured');
-        broadcastToClients({ type: 'error', message: 'OpenAI API key not configured' });
+        broadcastToClients({ 
+          type: 'error', 
+          message: 'OpenAI API key not configured',
+          step: 'error'
+        });
         audioRecorder.cleanup(audioPath);
         return;
       }
@@ -141,42 +245,83 @@ async function handleVoiceCommand(action: 'start' | 'stop'): Promise<void> {
       audioRecorder.cleanup(audioPath);
       
       if (!transcript) {
-        console.error('❌ Transcription failed');
-        broadcastToClients({ type: 'error', message: 'Speech transcription failed. Please speak more clearly.' });
+        broadcastToClients({ 
+          type: 'error', 
+          message: 'Could not understand speech. Please try speaking more clearly.',
+          step: 'error'
+        });
         return;
       }
 
-      console.log(`📝 Transcript: "${transcript}"`);
-      broadcastToClients({ type: 'transcription', message: transcript });
-
-      console.log('🎯 Sending to Cursor AI...');
-      broadcastToClients({ type: 'status', message: '🤖 Sending command to Cursor AI...' });
+      await sleep(200);
       
-      // Enhanced injection with success monitoring
+      // Step 3: Show transcription
+      console.log(`📝 Enhanced transcript: "${transcript}"`);
+      broadcastToClients({ 
+        type: 'transcription', 
+        step: 'transcribed',
+        message: `📝 Understood: "${transcript}"`,
+        transcript: transcript
+      });
+      
+      await sleep(600);
+      
+      // Step 4: Sending to Cursor
+      broadcastToClients({ 
+        type: 'voice-status', 
+        step: 'cursor-sending',
+        message: '🎯 Sending command to Cursor AI',
+        status: 'cursor-processing'
+      });
+      
       const success = await cursorAutomator.injectText(transcript, true);
       
       if (success) {
-        console.log('✅ Command sent to Cursor AI');
-        broadcastToClients({ type: 'injection', message: 'Command sent to Cursor AI successfully' });
-        broadcastToClients({ type: 'status', message: '🔨 AI is processing your request...' });
+        await sleep(300);
         
-        // Wait for actual changes to be made and refresh to happen
-        // The auto-refresh will handle detecting changes and refreshing
-        setTimeout(() => {
-          broadcastToClients({ type: 'status', message: '✅ Command completed! Watch for changes...' });
-        }, 1000);
+        // Step 5: AI Processing
+        broadcastToClients({ 
+          type: 'voice-status', 
+          step: 'ai-processing',
+          message: '🤖 Cursor AI is analyzing and executing your request',
+          status: 'ai-working'
+        });
+        
+        await sleep(800);
+        
+        // Step 6: Waiting for changes
+        broadcastToClients({ 
+          type: 'voice-status', 
+          step: 'waiting-changes',
+          message: '⏳ Waiting for code changes to be applied',
+          status: 'waiting'
+        });
+        
+        // The auto-refresh system will handle the rest
+        console.log('✅ Enhanced command sent to Cursor AI');
         
       } else {
-        console.error('❌ Failed to inject into Cursor');
-        broadcastToClients({ type: 'error', message: 'Failed to send command to Cursor' });
+        broadcastToClients({ 
+          type: 'error', 
+          message: 'Failed to send command to Cursor. Please ensure Cursor is open.',
+          step: 'error'
+        });
       }
       
     } catch (error) {
-      console.error('❌ Voice command processing failed:', error);
+      console.error('❌ Enhanced voice command processing failed:', error);
       isRecording = false;
-      broadcastToClients({ type: 'error', message: `Processing failed: ${error instanceof Error ? error.message : String(error)}` });
+      broadcastToClients({ 
+        type: 'error', 
+        message: `Processing failed: ${error instanceof Error ? error.message : String(error)}`,
+        step: 'error'
+      });
     }
   }
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise(resolve => setTimeout(resolve, ms));
 }
 
 // HTTP Server
@@ -202,36 +347,111 @@ const httpServer = http.createServer((req, res) => {
       'Content-Type': 'application/javascript',
       'Cache-Control': 'no-cache'
     });
-    res.end(getMinimalWidget());
+    res.end(getChatGPTStyleWidget());
   } else {
     res.writeHead(404, { 'Content-Type': 'text/plain' });
     res.end('Not found');
   }
 });
 
-// Minimal OpenAI-style widget
-function getMinimalWidget(): string {
+// ChatGPT Mac App Style Widget
+function getChatGPTStyleWidget(): string {
   return `(function(){
     var recording = false;
     var ws = null;
+    var currentStep = '';
     
-    // Minimal container
+    // Main container - ChatGPT style
     var container = document.createElement('div');
     container.id = 'vibetalk-widget';
-    container.style.cssText = 'position:fixed;bottom:20px;right:20px;z-index:10000;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;';
+    container.style.cssText = \`
+      position: fixed;
+      bottom: 30px;
+      left: 50%;
+      transform: translateX(-50%);
+      z-index: 10000;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+    \`;
 
-    // Status display (minimal)
-    var statusDiv = document.createElement('div');
-    statusDiv.style.cssText = 'background:rgba(0,0,0,0.9);color:white;padding:12px 16px;border-radius:8px;margin-bottom:10px;font-size:14px;display:none;min-width:200px;backdrop-filter:blur(10px);border:1px solid rgba(255,255,255,0.1);';
+    // Main bar - ChatGPT style
+    var mainBar = document.createElement('div');
+    mainBar.style.cssText = \`
+      background: rgba(0, 0, 0, 0.95);
+      backdrop-filter: blur(20px);
+      border-radius: 24px;
+      padding: 12px 20px;
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      min-width: 320px;
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+      transition: all 0.3s ease;
+    \`;
     
-    // Microphone button (OpenAI style)
-    var micButton = document.createElement('button');
-    micButton.innerHTML = '🎙️';
-    micButton.title = 'Click to start/stop voice recording';
-    micButton.style.cssText = 'background:#10a37f;color:white;border:none;padding:16px;border-radius:50%;font-size:20px;cursor:pointer;transition:all 0.2s ease;box-shadow:0 4px 12px rgba(16,163,127,0.3);width:56px;height:56px;display:flex;align-items:center;justify-content:center;';
+    // Voice visualization (like Whisper model)
+    var voiceViz = document.createElement('div');
+    voiceViz.style.cssText = \`
+      width: 20px;
+      height: 20px;
+      border-radius: 50%;
+      background: #10a37f;
+      transition: all 0.2s ease;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 12px;
+    \`;
+    voiceViz.innerHTML = '🎙️';
     
-    container.appendChild(statusDiv);
-    container.appendChild(micButton);
+    // Status text
+    var statusText = document.createElement('div');
+    statusText.style.cssText = \`
+      color: white;
+      font-size: 14px;
+      font-weight: 500;
+      flex: 1;
+      text-align: center;
+    \`;
+    statusText.textContent = 'Click to start voice command';
+    
+    // Action button (cross/check)
+    var actionBtn = document.createElement('button');
+    actionBtn.style.cssText = \`
+      background: rgba(255, 255, 255, 0.1);
+      border: none;
+      color: white;
+      width: 28px;
+      height: 28px;
+      border-radius: 14px;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 14px;
+      transition: all 0.2s ease;
+    \`;
+    actionBtn.innerHTML = '●';
+    
+    // Progress bar
+    var progressBar = document.createElement('div');
+    progressBar.style.cssText = \`
+      position: absolute;
+      bottom: 0;
+      left: 0;
+      height: 2px;
+      background: #10a37f;
+      border-radius: 0 0 24px 24px;
+      width: 0%;
+      transition: width 0.3s ease;
+    \`;
+    
+    mainBar.appendChild(voiceViz);
+    mainBar.appendChild(statusText);
+    mainBar.appendChild(actionBtn);
+    mainBar.appendChild(progressBar);
+    container.appendChild(mainBar);
     document.body.appendChild(container);
 
     // WebSocket connection
@@ -239,86 +459,171 @@ function getMinimalWidget(): string {
       ws = new WebSocket('ws://' + location.hostname + ':${WS_PORT}');
       
       ws.onopen = function() {
-        console.log('🔗 VibeTalk connected');
+        console.log('🔗 VibeTalk ChatGPT-style interface connected');
+        updateStatus('Ready for voice commands', '🎙️', '#10a37f');
       };
       
       ws.onmessage = function(event) {
-        var data = event.data;
-        
-        // Handle refresh signal
-        if (typeof data === 'string' && data.includes('refresh-now')) {
-          location.reload();
-          return;
-        }
-        
-        // Handle JSON messages
         try {
-          var message = JSON.parse(data);
+          var message = JSON.parse(event.data);
           handleMessage(message);
         } catch (e) {
-          console.log('Non-JSON message:', data);
+          if (event.data.includes('refresh-now')) {
+            showRefreshAnimation();
+          }
         }
       };
       
       ws.onclose = function() {
-        // Auto-reconnect
+        updateStatus('Reconnecting...', '🔄', '#f59e0b');
         setTimeout(connectWebSocket, 2000);
       };
       
       ws.onerror = function(error) {
-        console.error('WebSocket error:', error);
+        updateStatus('Connection error', '❌', '#ef4444');
       };
     }
     
     function handleMessage(message) {
       switch (message.type) {
-        case 'status':
-          showStatus(message.message);
+        case 'voice-status':
+          handleVoiceStatus(message);
           break;
         case 'transcription':
-          showStatus('📝 "' + message.message + '"');
+          handleTranscription(message);
           break;
-        case 'injection':
-          showStatus('✅ ' + message.message);
+        case 'progress':
+          handleProgress(message);
           break;
         case 'error':
-          showStatus('❌ ' + message.message, '#ef4444');
+          handleError(message);
           break;
         case 'refresh-now':
-          location.reload();
+          showRefreshAnimation();
           break;
       }
     }
     
-    function showStatus(text, bgColor = 'rgba(0,0,0,0.9)') {
-      statusDiv.textContent = text;
-      statusDiv.style.background = bgColor;
-      statusDiv.style.display = 'block';
+    function handleVoiceStatus(message) {
+      currentStep = message.step;
       
-      // Auto-hide after 8 seconds for non-error messages
-      if (!text.includes('❌')) {
-        setTimeout(function() {
-          if (!recording) {
-            statusDiv.style.display = 'none';
-          }
-        }, 8000);
+      switch (message.step) {
+        case 'initializing':
+          updateStatus('Initializing microphone...', '🎤', '#10a37f');
+          actionBtn.innerHTML = '⏹️';
+          break;
+        case 'listening':
+          updateStatus('Listening - speak now', '👂', '#10a37f');
+          startVoiceAnimation();
+          actionBtn.innerHTML = '⏹️';
+          break;
+        case 'processing':
+          updateStatus('Processing audio...', '⚡', '#f59e0b');
+          stopVoiceAnimation();
+          actionBtn.innerHTML = '⏳';
+          break;
+        case 'transcribing':
+          updateStatus('Converting speech to text...', '🧠', '#8b5cf6');
+          actionBtn.innerHTML = '✨';
+          break;
+        case 'cursor-sending':
+          updateStatus('Sending to Cursor AI...', '🎯', '#3b82f6');
+          actionBtn.innerHTML = '📤';
+          break;
+        case 'ai-processing':
+          updateStatus('AI is working on your request...', '🤖', '#6366f1');
+          actionBtn.innerHTML = '🔄';
+          break;
+        case 'waiting-changes':
+          updateStatus('Waiting for changes...', '⏳', '#f59e0b');
+          actionBtn.innerHTML = '👀';
+          break;
       }
     }
     
-    // Microphone button handler
-    micButton.onclick = function() {
+    function handleTranscription(message) {
+      var shortTranscript = message.transcript.length > 40 ? 
+        message.transcript.substring(0, 40) + '...' : message.transcript;
+      updateStatus('Understood: "' + shortTranscript + '"', '✅', '#10b981');
+      actionBtn.innerHTML = '✅';
+    }
+    
+    function handleProgress(message) {
+      updateStatus(message.message, '🔄', '#8b5cf6');
+      progressBar.style.width = message.progress + '%';
+      
+      if (message.step === 'refreshing') {
+        actionBtn.innerHTML = '🔄';
+      }
+    }
+    
+    function handleError(message) {
+      updateStatus(message.message, '❌', '#ef4444');
+      actionBtn.innerHTML = '❌';
+      recording = false;
+      setTimeout(() => {
+        updateStatus('Ready for voice commands', '🎙️', '#10a37f');
+        actionBtn.innerHTML = '●';
+        progressBar.style.width = '0%';
+      }, 4000);
+    }
+    
+    function updateStatus(text, icon, color) {
+      statusText.textContent = text;
+      voiceViz.innerHTML = icon;
+      voiceViz.style.background = color;
+    }
+    
+    function startVoiceAnimation() {
+      voiceViz.style.animation = 'pulse 1.5s infinite';
+      var style = document.createElement('style');
+      style.textContent = \`
+        @keyframes pulse {
+          0% { transform: scale(1); opacity: 1; }
+          50% { transform: scale(1.2); opacity: 0.7; }
+          100% { transform: scale(1); opacity: 1; }
+        }
+      \`;
+      document.head.appendChild(style);
+    }
+    
+    function stopVoiceAnimation() {
+      voiceViz.style.animation = 'none';
+    }
+    
+    function showRefreshAnimation() {
+      updateStatus('Refreshing with changes...', '✨', '#10b981');
+      actionBtn.innerHTML = '✨';
+      progressBar.style.width = '100%';
+      
+      setTimeout(() => {
+        location.reload();
+      }, 800);
+    }
+    
+    // Click handler for the entire bar
+    mainBar.onclick = function() {
       if (!recording) {
         recording = true;
-        micButton.innerHTML = '⏹️';
-        micButton.style.background = '#ef4444';
-        micButton.style.transform = 'scale(1.05)';
         ws.send('start');
+        mainBar.style.transform = 'scale(1.02)';
       } else {
         recording = false;
-        micButton.innerHTML = '🎙️';
-        micButton.style.background = '#10a37f';
-        micButton.style.transform = 'scale(1)';
         ws.send('stop');
+        mainBar.style.transform = 'scale(1)';
+      }
+    };
+    
+    // Hover effects
+    mainBar.onmouseenter = function() {
+      if (!recording) {
+        mainBar.style.background = 'rgba(16, 163, 127, 0.1)';
+      }
+    };
+    
+    mainBar.onmouseleave = function() {
+      if (!recording) {
+        mainBar.style.background = 'rgba(0, 0, 0, 0.95)';
       }
     };
     
@@ -327,39 +632,39 @@ function getMinimalWidget(): string {
   })();`;
 }
 
-// Create auto-refresh instance
-const autoRefresh = new SimpleAutoRefresh();
+// Create enhanced auto-refresh instance
+const autoRefresh = new EnhancedAutoRefresh();
 
 // WebSocket server
 const wss = new WebSocketServer({ port: WS_PORT });
 
 wss.on('connection', ws => {
-  console.log('🔗 New WebSocket connection');
+  console.log('🔗 New enhanced WebSocket connection');
   currentConnections.add(ws);
   autoRefresh.addConnection(ws);
   
   ws.on('message', async (data) => {
     const msg = data.toString();
     if (msg === 'start' || msg === 'stop') {
-      console.log(`🎤 Voice command: ${msg}`);
+      console.log(`🎤 Enhanced voice command: ${msg}`);
       await handleVoiceCommand(msg);
     }
   });
   
   ws.on('close', () => {
-    console.log('🔌 WebSocket connection closed');
+    console.log('🔌 Enhanced WebSocket connection closed');
     currentConnections.delete(ws);
   });
   
   ws.on('error', (error) => {
-    console.error('❌ WebSocket error:', error);
+    console.error('❌ Enhanced WebSocket error:', error);
     currentConnections.delete(ws);
   });
 });
 
 // Launch servers
 httpServer.listen(HTTP_PORT, () => {
-  console.log('🚀 Enhanced VibeTalk Server Started');
+  console.log('🚀 Enhanced ChatGPT-Style VibeTalk Server Started');
   console.log(`📱 HTTP Server: http://localhost:${HTTP_PORT}`);
   console.log(`🔌 WebSocket Server: ws://localhost:${WS_PORT}`);
   console.log('');
@@ -371,7 +676,7 @@ httpServer.listen(HTTP_PORT, () => {
     console.log('✅ OpenAI API key configured');
   }
   
-  console.log('🎤 Minimal voice interface ready!');
+  console.log('🎤 ChatGPT-style voice interface ready!');
   console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
 });
 
