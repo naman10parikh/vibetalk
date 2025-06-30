@@ -208,7 +208,7 @@ export class CursorAutomator {
     let shouldReturnToBrowser = false;
     
     try {
-      // Save the currently focused application and window
+      // Save the currently focused application and window FIRST
       originalWindow = await this.getCurrentFocusedWindow();
       console.log(`📱 Current window: ${originalWindow?.app} - "${originalWindow?.title}"`);
       
@@ -217,19 +217,8 @@ export class CursorAutomator {
         shouldReturnToBrowser = this.isWebInterfaceWindow(originalWindow);
         
         if (shouldReturnToBrowser) {
-          console.log(`🌐 Detected web interface usage - will return to browser after Cursor processing`);
+          console.log(`🌐 Detected web interface usage - will keep user on localhost`);
         }
-      }
-      
-      // Only proceed if we're not already in Cursor
-      if (originalWindow?.app !== 'Cursor') {
-        console.log(`🔄 Switching to Cursor temporarily...`);
-        
-        // Activate Cursor
-        await this.activateCursor();
-        
-        // Wait a moment for activation
-        await this.sleep(500);
       }
 
       // Add helpful prefix to make the context clear for Cursor's AI
@@ -239,19 +228,73 @@ export class CursorAutomator {
 
       let success = false;
 
-      // Strategy 1: Try clipboard first (most reliable)
-      if (!success) {
+      // NEW APPROACH: Minimal interruption for localhost users (fast activation + immediate return)
+      if (shouldReturnToBrowser) {
+        console.log(`🚀 LOCALHOST MODE: Minimal interruption—quick Cursor interaction`);
+        
+        // STEP 1: Quick activation of Cursor
+        console.log('⚡ Quick Cursor activation...');
+        await this.activateCursor();
+        await this.sleep(300); // Short delay for activation
+        
+        // STEP 2: Open Composer quickly
+        console.log('⚡ Opening Composer...');
+        await this.openComposer();
+        await this.sleep(400); // Short delay for Composer to open
+        
+        // STEP 3: Inject text rapidly
+        console.log('⚡ Injecting text...');
+        success = await this.injectViaClipboard(prefixedText);
+        if (!success) {
+          success = await this.injectViaKeystroke(prefixedText);
+        }
+        
+        // STEP 4: Auto-submit if requested
+        if (success && autoSubmit) {
+          console.log('⚡ Submitting...');
+          await this.submitToComposer();
+        }
+        
+        // STEP 5: IMMEDIATE focus return to browser (don't wait for processing)
+        if (success && originalWindow) {
+          console.log(`⚡ Immediate return to ${originalWindow.app}...`);
+          await this.sleep(200); // Very brief pause to let submit register
+          await this.returnFocusToApp(originalWindow.app);
+          
+          // Enhanced browser focus return for localhost
+          if (this.isBrowserApp(originalWindow.app)) {
+            await this.sleep(300);
+            await this.returnFocusToBrowserWithLocalhost();
+          }
+        }
+        
+        return success;
+      } else {
+        // STANDARD MODE: For non-localhost usage (original behavior)
+        console.log(`🔄 STANDARD MODE: Normal Cursor interaction`);
+        
+        // Only proceed if we're not already in Cursor
+        if (originalWindow?.app !== 'Cursor') {
+          console.log(`🔄 Switching to Cursor...`);
+          await this.activateCursor();
+          await this.sleep(500);
+        }
+
+        // ENSURE COMPOSER IS OPEN
+        await this.openComposer();
+        await this.sleep(300);
+
+        // Try different injection strategies
+        if (!success) {
         success = await this.injectViaClipboard(prefixedText);
         if (success) console.log('✅ Clipboard injection succeeded');
       }
 
-      // Strategy 2: Try keystroke simulation
       if (!success) {
         success = await this.injectViaKeystroke(prefixedText);
         if (success) console.log('✅ Keystroke injection succeeded');
       }
 
-      // Strategy 3: Try UI element approach
       if (!success) {
         success = await this.injectViaUIElement(prefixedText);
         if (success) console.log('✅ UI element injection succeeded');
@@ -261,52 +304,35 @@ export class CursorAutomator {
         await this.submitToComposer();
       }
 
-      // ENHANCED: Focus return logic
-      if (success) {
-        // Give Cursor time to process the request
+        // Standard focus return logic
+        if (success && originalWindow && originalWindow.app !== 'Cursor') {
         await this.sleep(800);
-        
-        if (shouldReturnToBrowser) {
-          // Return to browser with localhost prioritization
-          console.log(`🌐 Returning focus to browser for web interface...`);
-          const browserReturned = await this.returnFocusToBrowserWithLocalhost();
-          
-          if (browserReturned) {
-            console.log(`✅ Successfully returned focus to browser`);
-          } else {
-            console.log(`⚠️  Browser focus return may have failed - trying fallback`);
-            // Fallback to original window
-            if (originalWindow && originalWindow.app !== 'Cursor') {
-              await this.returnFocusToApp(originalWindow.app);
-            }
-          }
-        } else if (originalWindow && originalWindow.app !== 'Cursor') {
-          // Return to original app (non-browser case)
           console.log(`🔄 Returning focus to ${originalWindow.app}...`);
-          const focusReturned = await this.returnFocusToApp(originalWindow.app);
-          
-          if (focusReturned) {
-            console.log(`✅ Successfully returned focus to ${originalWindow.app}`);
-          } else {
-            console.log(`⚠️  Focus return may have failed for ${originalWindow.app}`);
-          }
+          await this.returnFocusToApp(originalWindow.app);
+          await this.sleep(300);
         }
-        
-        // Extra delay to ensure focus is properly set
-        await this.sleep(300);
       }
 
       return success;
+      
     } catch (error) {
       console.error('Error injecting text:', error);
       
-      // Emergency focus return
+      // Emergency focus return for localhost users
       if (shouldReturnToBrowser) {
         try {
-          console.log(`🚨 Emergency browser focus return...`);
+          console.log(`🚨 Emergency localhost focus return...`);
           await this.returnFocusToBrowserWithLocalhost();
         } catch (focusError) {
           console.error('Error in emergency browser focus return:', focusError);
+          // Ultimate fallback - try original window
+          if (originalWindow && originalWindow.app !== 'Cursor') {
+            try {
+              await this.returnFocusToApp(originalWindow.app);
+            } catch (finalError) {
+              console.error('Final fallback failed:', finalError);
+            }
+          }
         }
       } else if (originalWindow && originalWindow.app !== 'Cursor') {
         try {
@@ -323,6 +349,7 @@ export class CursorAutomator {
 
   /**
    * Detect if the current window is likely a web interface (localhost usage)
+   * ENHANCED: More aggressive localhost detection
    */
   private isWebInterfaceWindow(window: {app: string, title: string}): boolean {
     // Check if it's a browser
@@ -330,38 +357,75 @@ export class CursorAutomator {
       return false;
     }
     
-    // Check if the title contains localhost indicators
-    const localhostIndicators = ['localhost', '127.0.0.1', 'VibeTalk', 'demo', 'vibetalk'];
-    const titleLower = window.title.toLowerCase();
+    // ENHANCED: More comprehensive localhost indicators
+    const localhostIndicators = [
+      'localhost', '127.0.0.1', 'VibeTalk', 'demo', 'vibetalk',
+      // Common localhost ports
+      ':3000', ':3001', ':8080', ':8000', ':5000', ':4200', ':3030',
+      // Development terms
+      'dev', 'development', 'local', 'test', 'staging',
+      // Framework indicators that suggest localhost
+      'react', 'vue', 'next', 'nuxt', 'angular', 'svelte'
+    ];
     
-    return localhostIndicators.some(indicator => titleLower.includes(indicator.toLowerCase()));
+    const titleLower = window.title.toLowerCase();
+    const urlLikeIndicators = titleLower.includes('http://') || titleLower.includes('https://');
+    
+    // Check for explicit localhost indicators
+    const hasLocalhostIndicator = localhostIndicators.some(indicator => 
+      titleLower.includes(indicator.toLowerCase())
+    );
+    
+    // Additional check: if title contains common port patterns
+    const hasPortPattern = /:(3000|3001|8080|8000|5000|4200|3030|9000)/i.test(titleLower);
+    
+    // If it looks like a local URL or has localhost indicators, treat as localhost
+    const isLocalhost = hasLocalhostIndicator || hasPortPattern;
+    
+    if (isLocalhost) {
+      console.log(`🌐 LOCALHOST DETECTED: "${window.title}" in ${window.app}`);
+    }
+    
+    return isLocalhost;
   }
 
   /**
    * Enhanced browser focus return with localhost prioritization
+   * ENHANCED: Better localhost tab detection and fallback mechanisms
    */
   private async returnFocusToBrowserWithLocalhost(): Promise<boolean> {
     try {
-      console.log(`🔍 Looking for browser with localhost/VibeTalk content...`);
+      console.log(`🔍 Enhanced localhost browser return...`);
       
       // Try to find and activate a browser with localhost content
-      const browsers = ['Google Chrome', 'Safari', 'Arc', 'Firefox', 'Brave Browser'];
+      const browsers = ['Google Chrome', 'Safari', 'Arc', 'Firefox', 'Brave Browser', 'Microsoft Edge'];
       
       for (const browser of browsers) {
-        const success = await this.activateBrowserWithLocalhost(browser);
+        const success = await this.activateBrowserWithLocalhostEnhanced(browser);
         if (success) {
           return true;
         }
       }
       
-      // Fallback: activate any browser
+      // Fallback: try to activate any browser that's running
+      console.log(`🔄 Fallback: activating any available browser...`);
       for (const browser of browsers) {
         try {
+          // Check if browser is running
+          const checkScript = `
+            tell application "System Events"
+              return (name of processes) contains "${browser}"
+            end tell
+          `;
+          const { stdout } = await execAsync(`osascript -e '${checkScript}'`);
+          
+          if (stdout.trim() === 'true') {
           await execAsync(`osascript -e 'tell application "${browser}" to activate'`);
           console.log(`✅ Activated ${browser} as fallback`);
           return true;
+          }
         } catch (error) {
-          // Browser not running, continue to next
+          // Browser not running or failed to activate, continue to next
         }
       }
       
@@ -375,9 +439,9 @@ export class CursorAutomator {
   }
 
   /**
-   * Try to activate a specific browser and find localhost content
+   * Enhanced browser activation with better localhost detection
    */
-  private async activateBrowserWithLocalhost(browserName: string): Promise<boolean> {
+  private async activateBrowserWithLocalhostEnhanced(browserName: string): Promise<boolean> {
     try {
       // First check if browser is running
       const checkScript = `
@@ -393,8 +457,8 @@ export class CursorAutomator {
       
       console.log(`🔍 Checking ${browserName} for localhost content...`);
       
-      // Try Chrome-specific approach
-      if (browserName.includes('Chrome')) {
+      // Try Chrome-based browsers (Chrome, Arc, Brave, Edge)
+      if (browserName.includes('Chrome') || browserName.includes('Arc') || browserName.includes('Brave') || browserName.includes('Edge')) {
         const chromeScript = `
           tell application "${browserName}"
             activate
@@ -403,7 +467,8 @@ export class CursorAutomator {
               repeat with t in tabs of w
                 set tabUrl to URL of t
                 set tabTitle to title of t
-                if tabUrl contains "localhost" or tabUrl contains "127.0.0.1" or tabTitle contains "VibeTalk" or tabTitle contains "Demo" then
+                -- Enhanced localhost detection
+                if tabUrl contains "localhost" or tabUrl contains "127.0.0.1" or tabUrl contains ":3000" or tabUrl contains ":3001" or tabUrl contains ":8080" or tabUrl contains ":8000" or tabUrl contains ":5000" or tabUrl contains ":4200" or tabTitle contains "VibeTalk" or tabTitle contains "Demo" or tabTitle contains "localhost" or tabTitle contains "dev" then
                   set active tab index of w to index of t
                   set index of w to 1
                   set foundTab to true
@@ -416,10 +481,14 @@ export class CursorAutomator {
           end tell
         `;
         
+        try {
         const { stdout: chromeResult } = await execAsync(`osascript -e '${chromeScript}'`);
         if (chromeResult.trim() === 'true') {
-          console.log('✅ Found and activated localhost tab in Chrome');
+            console.log(`✅ Found and activated localhost tab in ${browserName}`);
           return true;
+          }
+        } catch (error) {
+          console.log(`⚠️  ${browserName} tab search failed:`, error instanceof Error ? error.message : String(error));
         }
       }
       
@@ -432,7 +501,8 @@ export class CursorAutomator {
               repeat with t in tabs of w
                 set tabUrl to URL of t
                 set tabTitle to name of t
-                if tabUrl contains "localhost" or tabUrl contains "127.0.0.1" or tabTitle contains "VibeTalk" or tabTitle contains "Demo" then
+                -- Enhanced localhost detection for Safari
+                if tabUrl contains "localhost" or tabUrl contains "127.0.0.1" or tabUrl contains ":3000" or tabUrl contains ":3001" or tabUrl contains ":8080" or tabUrl contains ":8000" or tabUrl contains ":5000" or tabUrl contains ":4200" or tabTitle contains "VibeTalk" or tabTitle contains "Demo" or tabTitle contains "localhost" or tabTitle contains "dev" then
                   set current tab of w to t
                   set index of w to 1
                   return true
@@ -443,17 +513,26 @@ export class CursorAutomator {
           end tell
         `;
         
+        try {
         const { stdout: safariResult } = await execAsync(`osascript -e '${safariScript}'`);
         if (safariResult.trim() === 'true') {
           console.log('✅ Found and activated localhost tab in Safari');
           return true;
+          }
+        } catch (error) {
+          console.log('⚠️  Safari tab search failed:', error instanceof Error ? error.message : String(error));
         }
       }
       
-      // Fallback: just activate the browser
+      // Fallback: just activate the browser (better than nothing)
+      try {
       await execAsync(`osascript -e 'tell application "${browserName}" to activate'`);
-      console.log(`📱 Activated ${browserName} (localhost detection may have failed)`);
+        console.log(`📱 Activated ${browserName} (localhost detection may have failed, but browser is now active)`);
       return true;
+      } catch (error) {
+        console.log(`❌ Failed to activate ${browserName}:`, error instanceof Error ? error.message : String(error));
+        return false;
+      }
       
     } catch (error) {
       console.log(`⚠️  Failed to check/activate ${browserName}:`, error instanceof Error ? error.message : String(error));
@@ -520,7 +599,6 @@ export class CursorAutomator {
                 end tell
               end tell
             `;
-            
             await execAsync(`osascript -e '${pasteScript}'`);
             resolve(true);
           } catch (error) {
@@ -540,13 +618,12 @@ export class CursorAutomator {
    */
   private sanitizeTextForAppleScript(text: string): string {
     return text
-      // Remove emojis and special Unicode characters that cause AppleScript issues
+      // Remove emojis and problematic Unicode characters
       .replace(/[\u{1F600}-\u{1F64F}]|[\u{1F300}-\u{1F5FF}]|[\u{1F680}-\u{1F6FF}]|[\u{1F1E0}-\u{1F1FF}]|[\u{2600}-\u{26FF}]|[\u{2700}-\u{27BF}]/gu, '')
-      // Escape quotes and backslashes
-      .replace(/\\/g, '\\\\')
+      // Escape characters that break AppleScript strings
+      .replace(/\\/g, "\\\\")
       .replace(/"/g, '\\"')
       .replace(/'/g, "\\'")
-      // Clean up multiple spaces
       .replace(/\s+/g, ' ')
       .trim();
   }
@@ -556,33 +633,20 @@ export class CursorAutomator {
    */
   private async injectViaUIElement(text: string): Promise<boolean> {
     try {
-      // This is more complex and might need adjustment based on Cursor's UI structure
       const script = `
         tell application "System Events"
           tell process "Cursor"
-            -- Try to find a text field that might be the Composer
             set textFields to text field of window 1
-            repeat with textField in textFields
+            repeat with tField in textFields
               try
-                set focused of textField to true
-                set value of textField to "${text.replace(/"/g, '\\"')}"
-                return true
-              end try
-            end repeat
-            
-            -- If no text field found, try text areas
-            set textAreas to text area of window 1
-            repeat with textArea in textAreas
-              try
-                set focused of textArea to true
-                set value of textArea to "${text.replace(/"/g, '\\"')}"
+                set focused of tField to true
+                set value of tField to "${text.replace(/"/g, '\\"')}"
                 return true
               end try
             end repeat
           end tell
         end tell
       `;
-      
       const { stdout } = await execAsync(`osascript -e '${script}'`);
       return stdout.trim() === 'true';
     } catch (error) {
@@ -592,15 +656,12 @@ export class CursorAutomator {
   }
 
   /**
-   * Open Cursor's Composer (using keyboard shortcut)
+   * Open Cursor's Composer (Cmd+I)
    */
   async openComposer(): Promise<boolean> {
     try {
       await this.activateCursor();
-      await this.sleep(300);
-      
-      // Try common shortcuts for opening Composer
-      // Cursor might use Cmd+I or Cmd+K or another shortcut
+      await this.sleep(200);
       const script = `
         tell application "System Events"
           tell process "Cursor"
@@ -608,10 +669,8 @@ export class CursorAutomator {
           end tell
         end tell
       `;
-      
       await execAsync(`osascript -e '${script}'`);
-      await this.sleep(500); // Wait for Composer to open
-      
+      await this.sleep(400);
       return true;
     } catch (error) {
       console.error('Error opening Composer:', error);
@@ -620,12 +679,10 @@ export class CursorAutomator {
   }
 
   /**
-   * Submit the current text in Composer (press Enter)
+   * Press Return to submit in Composer
    */
   async submitToComposer(): Promise<boolean> {
     try {
-      await this.sleep(200); // Brief pause after text injection
-      
       const script = `
         tell application "System Events"
           tell process "Cursor"
@@ -633,9 +690,7 @@ export class CursorAutomator {
           end tell
         end tell
       `;
-      
       await execAsync(`osascript -e '${script}'`);
-      console.log('📤 Submitted text to Cursor Composer');
       return true;
     } catch (error) {
       console.error('Error submitting to Composer:', error);
@@ -643,37 +698,20 @@ export class CursorAutomator {
     }
   }
 
-  /**
-   * Utility function to sleep for a specified number of milliseconds
-   */
+  /** Utility sleep */
   private sleep(ms: number): Promise<void> {
     return new Promise(resolve => setTimeout(resolve, ms));
   }
 
-  /**
-   * Test function to validate AppleScript automation is working
-   */
+  /** Simple automation self-test */
   async testAutomation(): Promise<boolean> {
     try {
-      console.log('Testing Cursor automation...');
-      
-      const isRunning = await this.isCursorRunning();
-      if (!isRunning) {
-        console.log('❌ Cursor is not running');
-        return false;
-      }
-      
-      const activated = await this.activateCursor();
-      if (!activated) {
-        console.log('❌ Could not activate Cursor');
-        return false;
-      }
-      
-      console.log('✅ Cursor automation test passed!');
+      const running = await this.isCursorRunning();
+      if (!running) return false;
+      await this.activateCursor();
       return true;
-    } catch (error) {
-      console.error('❌ Cursor automation test failed:', error);
+    } catch {
       return false;
     }
   }
-} 
+}

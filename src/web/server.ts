@@ -3,426 +3,361 @@
 import * as http from 'http';
 import * as fs from 'fs';
 import * as path from 'path';
-import WebSocket, { WebSocketServer } from 'ws';
+import { WebSocketServer } from 'ws';
+import { exec } from 'child_process';
+import { promisify } from 'util';
 import { AudioRecorder } from '../audio/recorder';
 import { WhisperClient } from '../whisper/client';
 import { CursorAutomator } from '../cursor/automator';
 import { Config } from '../config/config';
 
-const HTTP_PORT = 3000;
-const WS_PORT = 3001;
+const execAsync = promisify(exec);
+
+// Initialize VibeTalk components
+const config = new Config();
+const audioRecorder = new AudioRecorder();
+const whisperClient = config.isValid() ? new WhisperClient(config.openaiApiKey) : null;
+const cursorAutomator = new CursorAutomator();
+
+// Voice recording state
+let isRecording = false;
+let currentConnections = new Set<any>();
+
+// Allow dynamic ports, default to 3000 for HTTP and HTTP+1 for WebSocket
+const HTTP_PORT = process.env.PORT ? parseInt(process.env.PORT) : 3000;
+const WS_PORT = process.env.WS_PORT ? parseInt(process.env.WS_PORT) : HTTP_PORT + 1;
 
 function serveFile(res: http.ServerResponse, filePath: string, contentType: string) {
   try {
     const content = fs.readFileSync(filePath, 'utf8');
-    res.writeHead(200, { 'Content-Type': contentType });
+    res.writeHead(200, { 
+      'Content-Type': contentType,
+      'Cache-Control': 'no-cache'
+    });
     res.end(content);
-  } catch (error) {
+  } catch {
     res.writeHead(404, { 'Content-Type': 'text/plain' });
     res.end('File not found');
   }
 }
 
-// HTTP Server for serving the web interface
+// HTTP Server for serving the single localhost page and widget
 const httpServer = http.createServer((req, res) => {
   const url = req.url || '/';
-  
+
   if (url === '/' || url === '/index.html') {
     const indexPath = path.join(__dirname, 'index.html');
     serveFile(res, indexPath, 'text/html');
   } else if (url === '/widget.js') {
-    const widgetPath = path.join(__dirname, 'widget.js');
-    serveFile(res, widgetPath, 'application/javascript');
+    res.writeHead(200, { 
+      'Content-Type': 'application/javascript',
+      'Cache-Control': 'no-cache'
+    });
+    res.end(getSimpleWidget());
   } else {
     res.writeHead(404, { 'Content-Type': 'text/plain' });
     res.end('Not found');
   }
 });
 
-// WebSocket Server with improved connection management
-const wss = new WebSocketServer({ 
-  port: WS_PORT,
-  perMessageDeflate: false // Disable compression to reduce connection issues
-});
-
-class VibeTalkWebService {
-  private config: Config;
-  private audioRecorder: AudioRecorder;
-  private whisperClient: WhisperClient;
-  private cursorAutomator: CursorAutomator;
-  private activeConnections: Set<WebSocket> = new Set();
-
-  constructor() {
-    this.config = new Config();
-    this.audioRecorder = new AudioRecorder();
-    this.whisperClient = new WhisperClient(this.config.openaiApiKey);
-    this.cursorAutomator = new CursorAutomator();
-  }
-
-  async initialize() {
-    // Check if API key is configured
-    if (!this.config.openaiApiKey) {
-      console.error('❌ OpenAI API key not found. Please set OPENAI_API_KEY environment variable.');
-      process.exit(1);
-    }
-
-    // Test Cursor connection
-    const cursorRunning = await this.cursorAutomator.isCursorRunning();
-    if (!cursorRunning) {
-      console.log('⚠️  Cursor is not running. Please start Cursor first.');
-    }
-
-    console.log('✅ VibeTalk Web Service initialized!');
-  }
-
-  /**
-   * Add connection to active set and set up heartbeat
-   */
-  addConnection(ws: WebSocket) {
-    this.activeConnections.add(ws);
-    
-    // Set up heartbeat to keep connection alive
-    const heartbeat = setInterval(() => {
-      if (ws.readyState === WebSocket.OPEN) {
-        ws.ping();
-      } else {
-        clearInterval(heartbeat);
-        this.activeConnections.delete(ws);
-      }
-    }, 30000); // Ping every 30 seconds
-    
-    // Handle pong responses
-    ws.on('pong', () => {
-      // Connection is alive
-    });
-    
-    // Clean up on close
-    ws.on('close', () => {
-      clearInterval(heartbeat);
-      this.activeConnections.delete(ws);
-    });
-  }
-
-  /**
-   * Send message with better error handling and connection validation
-   */
-  private sendSafeMessage(ws: WebSocket, message: any): boolean {
+// Voice recording handler
+async function handleVoiceCommand(action: 'start' | 'stop'): Promise<void> {
+  if (action === 'start' && !isRecording) {
     try {
-      if (ws.readyState === WebSocket.OPEN && this.activeConnections.has(ws)) {
-        ws.send(JSON.stringify(message));
-        return true;
-      } else {
-        console.log('⚠️  WebSocket not ready for message:', message.type);
-        return false;
-      }
+      console.log('🎤 Starting voice recording...');
+      isRecording = true;
+      broadcastToClients({ type: 'status', message: 'Recording...' });
+      
+      await audioRecorder.startRecording();
+      console.log('✅ Voice recording started');
+      
     } catch (error) {
-      console.error('❌ Failed to send WebSocket message:', error);
-      this.activeConnections.delete(ws);
-      return false;
+      console.error('❌ Failed to start recording:', error);
+      isRecording = false;
+      broadcastToClients({ type: 'error', message: 'Failed to start recording' });
     }
-  }
-
-  /**
-   * Broadcast message to all active connections
-   */
-  private broadcast(message: any) {
-    let successCount = 0;
-    this.activeConnections.forEach(ws => {
-      if (this.sendSafeMessage(ws, message)) {
-        successCount++;
-      }
-    });
-    return successCount;
-  }
-
-  async processAudioData(audioData: number[], mimeType: string, ws: WebSocket) {
-    let tempFiles: string[] = [];
-    const processId = Date.now(); // Unique ID for this processing session
     
+  } else if (action === 'stop' && isRecording) {
     try {
-      console.log(`🎯 Starting audio processing session: ${processId}`);
+      console.log('⏹️ Stopping voice recording...');
+      broadcastToClients({ type: 'status', message: 'Processing...' });
       
-      // Validate connection before starting
-      if (!this.validateConnection(ws)) {
-        console.log('❌ WebSocket invalid at start, aborting processing');
+      const audioPath = await audioRecorder.stopRecording();
+      isRecording = false;
+      
+      if (!audioPath) {
+        console.error('❌ No audio file created');
+        broadcastToClients({ type: 'error', message: 'No audio recorded' });
         return;
       }
 
-      // Step 1: Processing status
-      this.sendSafeMessage(ws, {
-        type: 'status',
-        message: '🔄 Processing your audio...',
-        className: 'processing',
-        processId
-      });
-
-      // Save audio file
-      const buffer = Buffer.from(audioData);
-      const timestamp = Date.now();
-      const tempPath = path.join(this.config.tempDir, `web_recording_${timestamp}.webm`);
-      tempFiles.push(tempPath);
+      console.log('🧠 Transcribing audio...');
+      broadcastToClients({ type: 'status', message: 'Transcribing...' });
       
-      // Ensure temp directory exists
-      if (!fs.existsSync(this.config.tempDir)) {
-        fs.mkdirSync(this.config.tempDir, { recursive: true });
-      }
-      
-      fs.writeFileSync(tempPath, buffer);
-      console.log(`📁 Session ${processId}: Saved audio file: ${tempPath} (${buffer.length} bytes)`);
-
-      // Convert audio if needed
-      const wavPath = await this.convertToWav(tempPath, timestamp);
-      if (wavPath) tempFiles.push(wavPath);
-      
-      // Step 2: Transcription status
-      if (!this.validateConnection(ws)) {
-        console.log(`❌ Session ${processId}: WebSocket invalid before transcription`);
-        this.cleanupFiles(tempFiles);
+      if (!config.isValid() || !whisperClient) {
+        console.error('❌ OpenAI API key not configured');
+        broadcastToClients({ type: 'error', message: 'API key not configured' });
+        audioRecorder.cleanup(audioPath);
         return;
       }
 
-      this.sendSafeMessage(ws, {
-        type: 'status',
-        message: '🧠 Transcribing with AI (this may take a few seconds)...',
-        className: 'processing',
-        processId
-      });
-
-      const transcript = await this.whisperClient.transcribe(wavPath || tempPath);
+      const transcript = await whisperClient.transcribe(audioPath);
+      audioRecorder.cleanup(audioPath);
       
       if (!transcript) {
-        throw new Error('Failed to transcribe audio - empty result');
-      }
-
-      console.log(`📝 Session ${processId}: Transcription successful: "${transcript}"`);
-
-      // Step 3: Show transcription result
-      if (!this.validateConnection(ws)) {
-        console.log(`❌ Session ${processId}: WebSocket invalid after transcription`);
-        this.cleanupFiles(tempFiles);
+        console.error('❌ Transcription failed');
+        broadcastToClients({ type: 'error', message: 'Transcription failed' });
         return;
       }
 
-      this.sendSafeMessage(ws, {
-        type: 'transcription',
-        text: transcript,
-        message: `✅ Got it: "${transcript}"`,
-        processId
-      });
+      console.log(`📝 Transcript: "${transcript}"`);
+      broadcastToClients({ type: 'transcript', message: transcript });
 
-      // Wait a moment to let user see the transcription
-      await this.sleep(1000);
-
-      // Step 4: Cursor injection status
-      if (!this.validateConnection(ws)) {
-        console.log(`❌ Session ${processId}: WebSocket invalid before Cursor injection`);
-        this.cleanupFiles(tempFiles);
-        return;
-      }
-
-      this.sendSafeMessage(ws, {
-        type: 'injection',
-        message: '💬 Sending to Cursor AI...',
-        processId
-      });
-
-      // Perform Cursor operations
-      await this.cursorAutomator.openComposer();
-      const success = await this.cursorAutomator.injectText(transcript, true);
-
+      console.log('🎯 Injecting into Cursor...');
+      broadcastToClients({ type: 'status', message: 'Injecting into Cursor...' });
+      
+      const success = await cursorAutomator.injectText(transcript, true);
+      
       if (success) {
-        console.log(`✅ Session ${processId}: Successfully injected text into Cursor`);
-        
-        // Step 5: Success status
-        if (this.validateConnection(ws)) {
-          this.sendSafeMessage(ws, {
-            type: 'success',
-            message: '🎯 Request sent to Cursor! Working on it...',
-            processId
-          });
-        }
-        
-        // Step 6: Processing status (with longer delay)
-        setTimeout(() => {
-          if (this.validateConnection(ws)) {
-            this.sendSafeMessage(ws, {
-              type: 'processing', 
-              message: '⚙️ Cursor is processing your request...',
-              processId
-            });
-          }
-        }, 2000); // Increased delay
-        
-        // Step 7: Prepare for refresh (with much longer delay for reliability)
-        setTimeout(() => {
-          if (this.validateConnection(ws)) {
-            this.sendSafeMessage(ws, {
-              type: 'refresh',
-              message: '🔄 Changes ready! Refreshing page in 3 seconds...',
-              processId
-            });
-            
-            // Additional delay before actual refresh
-            setTimeout(() => {
-              if (this.validateConnection(ws)) {
-                this.sendSafeMessage(ws, {
-                  type: 'refresh-now',
-                  message: '🔄 Refreshing now...',
-                  processId
-                });
-              }
-            }, 3000);
-          }
-        }, 7000); // Much longer delay to ensure Cursor processes the request
-        
+        console.log('✅ Successfully injected into Cursor');
+        broadcastToClients({ type: 'success', message: 'Command executed successfully!' });
       } else {
-        throw new Error('Failed to inject text into Cursor');
+        console.error('❌ Failed to inject into Cursor');
+        broadcastToClients({ type: 'error', message: 'Failed to inject into Cursor' });
       }
-
-      // Cleanup files
-      this.cleanupFiles(tempFiles);
-      console.log(`✅ Session ${processId}: Completed successfully`);
-
+      
     } catch (error) {
-      console.error(`❌ Session ${processId}: Error processing audio:`, error);
-      
-      // Clean up files even on error
-      this.cleanupFiles(tempFiles);
-      
-      // Send helpful error message
-      const errorMessage = this.getHelpfulErrorMessage(error);
-      this.sendSafeMessage(ws, {
-        type: 'error',
-        message: errorMessage,
-        processId
-      });
+      console.error('❌ Voice command processing failed:', error);
+      isRecording = false;
+      broadcastToClients({ type: 'error', message: 'Processing failed' });
     }
-  }
-
-  /**
-   * Validate WebSocket connection
-   */
-  private validateConnection(ws: WebSocket): boolean {
-    return ws.readyState === WebSocket.OPEN && this.activeConnections.has(ws);
-  }
-
-  /**
-   * Sleep helper with better promise handling
-   */
-  private sleep(ms: number): Promise<void> {
-    return new Promise(resolve => setTimeout(resolve, ms));
-  }
-
-  private async convertToWav(webmPath: string, timestamp: number): Promise<string | null> {
-    try {
-      const wavPath = path.join(this.config.tempDir, `converted_${timestamp}.wav`);
-      
-      // Use ffmpeg to convert webm to wav
-      const { exec } = require('child_process');
-      const { promisify } = require('util');
-      const execAsync = promisify(exec);
-      
-      await execAsync(`ffmpeg -i "${webmPath}" -ar 16000 -ac 1 -c:a pcm_s16le "${wavPath}" -y`);
-      
-      return wavPath;
-    } catch (error) {
-      console.log('Could not convert to WAV, trying original file...');
-      return null;
-    }
-  }
-
-  private cleanupFiles(filePaths: string[]) {
-    filePaths.forEach(filePath => {
-      try {
-        if (fs.existsSync(filePath)) {
-          fs.unlinkSync(filePath);
-          console.log(`🗑️  Cleaned up: ${filePath}`);
-        }
-      } catch (error) {
-        console.log(`⚠️  Could not clean up ${filePath}`);
-      }
-    });
-  }
-
-  /**
-   * Get a helpful error message based on the error type
-   */
-  private getHelpfulErrorMessage(error: any): string {
-    const errorStr = error instanceof Error ? error.message : String(error);
-    
-    if (errorStr.includes('API key')) {
-      return '❌ API key issue. Check your OpenAI API key.';
-    }
-    if (errorStr.includes('transcribe')) {
-      return '❌ Transcription failed. Try speaking more clearly.';
-    }
-    if (errorStr.includes('Cursor')) {
-      return '❌ Cursor connection failed. Make sure Cursor is open.';
-    }
-    if (errorStr.includes('audio')) {
-      return '❌ Audio processing failed. Check your microphone.';
-    }
-    
-    return `❌ Something went wrong: ${errorStr}`;
   }
 }
 
-// Initialize the service
-const vibeTalkService = new VibeTalkWebService();
-
-// WebSocket connection handling with improved management
-wss.on('connection', (ws) => {
-  console.log('🔗 Client connected to WebSocket');
-  
-  // Add to active connections
-  vibeTalkService.addConnection(ws);
-
-  // Send initial status
-  ws.send(JSON.stringify({
-    type: 'status',
-    message: '✅ Connected to VibeTalk!',
-    className: 'ready'
-  }));
-
-  ws.on('message', async (message) => {
-    try {
-      const data = JSON.parse(message.toString());
-      
-      if (data.type === 'audio') {
-        console.log(`🎵 Received audio data: ${data.data.length} bytes`);
-        await vibeTalkService.processAudioData(data.data, data.mimeType, ws);
-      } else if (data.type === 'ping') {
-        // Respond to client pings
-        ws.send(JSON.stringify({ type: 'pong' }));
-      }
-    } catch (error) {
-      console.error('Error handling WebSocket message:', error);
-      if (ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify({
-          type: 'error',
-          message: 'Failed to process message'
-        }));
-      }
+// Broadcast to all connected clients
+function broadcastToClients(message: any) {
+  const messageStr = JSON.stringify(message);
+  currentConnections.forEach(ws => {
+    if (ws.readyState === ws.OPEN) {
+      ws.send(messageStr);
     }
   });
+}
 
-  ws.on('error', (error) => {
-    console.error('WebSocket error:', error);
+// Simplified auto-refresh via polling src/web/index.html for changes
+class SimpleAutoRefresh {
+  private connections = new Set<any>();
+  private lastMTime = 0;
+  private building = false;
+
+  constructor() {
+    this.updateMTime();
+    setInterval(() => this.check(), 1000);
+    console.log('🔍 Watching for changes in src/web/index.html...');
+  }
+
+  addConnection(ws: any) {
+    this.connections.add(ws);
+    ws.on('close', () => this.connections.delete(ws));
+  }
+
+  private updateMTime() {
+    try {
+      this.lastMTime = fs.statSync(path.join(process.cwd(), 'src/web/index.html')).mtimeMs;
+    } catch {}
+  }
+
+  private async check() {
+    if (this.building) return;
+    try {
+      const p = path.join(process.cwd(), 'src/web/index.html');
+      const st = fs.statSync(p).mtimeMs;
+      if (st > this.lastMTime) {
+        console.log('📁 File change detected, rebuilding...');
+        this.lastMTime = st;
+        this.building = true;
+        
+        await execAsync('npm run build');
+        console.log('🔄 Sending refresh signal to all clients...');
+        
+        this.connections.forEach(ws => {
+          if (ws.readyState === ws.OPEN) {
+            ws.send('refresh');
+          }
+        });
+        
+        this.building = false;
+      }
+    } catch (error) {
+      console.error('❌ Auto-refresh error:', error);
+      this.building = false;
+    }
+  }
+}
+
+// Embed widget for auto-refresh indicator and functionality
+function getSimpleWidget(): string {
+  return `(function(){
+    // Container for indicator and mic button
+    var container = document.createElement('div');
+    container.id = 'vibetalk-widget';
+    container.style.cssText = 'position:fixed;bottom:10px;right:10px;z-index:10000;display:flex;flex-direction:column;align-items:center;gap:5px;';
+
+    // Status indicator
+    var indicator = document.createElement('div');
+    indicator.style.cssText = 'background:#10b981;color:white;padding:5px 10px;border-radius:5px;font-family:monospace;font-size:12px;min-width:120px;text-align:center;';
+    indicator.textContent = 'Connecting...';
+
+    // Microphone button
+    var micButton = document.createElement('button');
+    micButton.textContent = '🎙️';
+    micButton.title = 'Click to start/stop voice recording';
+    micButton.style.cssText = 'background:#3b82f6;color:white;border:none;padding:10px;border-radius:50%;font-size:20px;cursor:pointer;transition:all 0.3s ease;';
+    
+    // Toggle recording on click
+    var recording = false;
+    micButton.onclick = function() {
+      if (!recording) {
+        ws.send('start');
+        indicator.textContent = '🎤 Recording...';
+        indicator.style.background = '#ef4444';
+        micButton.style.background = '#ef4444';
+        micButton.style.transform = 'scale(1.1)';
+        recording = true;
+      } else {
+        ws.send('stop');
+        indicator.textContent = '⏳ Processing...';
+        indicator.style.background = '#f59e0b';
+        micButton.style.background = '#3b82f6';
+        micButton.style.transform = 'scale(1)';
+        recording = false;
+      }
+    };
+
+    container.appendChild(indicator);
+    container.appendChild(micButton);
+    document.body.appendChild(container);
+
+    // WebSocket for commands and auto-refresh
+    var ws = new WebSocket('ws://' + location.hostname + ':${WS_PORT}');
+    
+    ws.onopen = function() {
+      indicator.textContent = '✅ Ready';
+      indicator.style.background = '#10b981';
+      console.log('🔗 VibeTalk widget connected');
+    };
+    
+    ws.onmessage = function(event) {
+      var data = event.data;
+      
+      // Handle refresh signal
+      if (data === 'refresh') {
+        indicator.textContent = '🔄 Refreshing...';
+        indicator.style.background = '#8b5cf6';
+        setTimeout(function() {
+          location.reload();
+        }, 500);
+        return;
+      }
+      
+      // Handle JSON messages
+      try {
+        var message = JSON.parse(data);
+        switch (message.type) {
+          case 'status':
+            indicator.textContent = message.message;
+            indicator.style.background = '#f59e0b';
+            break;
+          case 'transcript':
+            indicator.textContent = '📝 ' + message.message.substring(0, 15) + '...';
+            indicator.style.background = '#8b5cf6';
+            break;
+          case 'success':
+            indicator.textContent = '✅ Success!';
+            indicator.style.background = '#10b981';
+            setTimeout(function() {
+              indicator.textContent = '✅ Ready';
+              recording = false;
+              micButton.style.background = '#3b82f6';
+              micButton.style.transform = 'scale(1)';
+            }, 2000);
+            break;
+          case 'error':
+            indicator.textContent = '❌ Error';
+            indicator.style.background = '#ef4444';
+            setTimeout(function() {
+              indicator.textContent = '✅ Ready';
+              recording = false;
+              micButton.style.background = '#3b82f6';
+              micButton.style.transform = 'scale(1)';
+            }, 3000);
+            break;
+        }
+      } catch (e) {
+        console.log('Non-JSON message:', data);
+      }
+    };
+    
+    ws.onclose = function() {
+      indicator.textContent = '❌ Disconnected';
+      indicator.style.background = '#6b7280';
+    };
+    
+    ws.onerror = function(error) {
+      console.error('WebSocket error:', error);
+      indicator.textContent = '❌ Error';
+      indicator.style.background = '#ef4444';
+    };
+  })();`;
+}
+
+// Start WebSocket server
+const wss = new WebSocketServer({ port: WS_PORT });
+const autoRefresh = new SimpleAutoRefresh();
+
+wss.on('connection', ws => {
+  console.log('🔗 New WebSocket connection');
+  
+  // Track connections
+  currentConnections.add(ws);
+  autoRefresh.addConnection(ws);
+  
+  // Handle voice commands
+  ws.on('message', async (data) => {
+    const msg = data.toString();
+    if (msg === 'start' || msg === 'stop') {
+      console.log(`🎤 Voice command: ${msg}`);
+      await handleVoiceCommand(msg);
+    }
   });
-
+  
   ws.on('close', () => {
-    console.log('❌ Client disconnected from WebSocket');
+    console.log('🔌 WebSocket connection closed');
+    currentConnections.delete(ws);
+  });
+  
+  ws.on('error', (error) => {
+    console.error('❌ WebSocket error:', error);
+    currentConnections.delete(ws);
   });
 });
 
-// Start servers
+// Launch HTTP and WebSocket servers
 httpServer.listen(HTTP_PORT, () => {
-  console.log(`🌐 VibeTalk Web Interface running at http://localhost:${HTTP_PORT}`);
-  console.log(`🔌 WebSocket server running on port ${WS_PORT}`);
-  console.log('🎙️ Open the web interface in your browser for seamless voice control!');
+  console.log('🌐 VibeTalk Web Server Started');
+  console.log(`📱 HTTP Server: http://localhost:${HTTP_PORT}`);
+  console.log(`🔌 WebSocket Server: ws://localhost:${WS_PORT}`);
+  console.log('');
+  
+  if (!config.isValid()) {
+    console.log('⚠️  OpenAI API key not configured');
+    console.log('💡 Set your API key: export OPENAI_API_KEY="your-key-here"');
+  } else {
+    console.log('✅ OpenAI API key configured');
+  }
+  
+  console.log('🎤 Ready for voice commands!');
+  console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
 });
-
-// Initialize the service
-vibeTalkService.initialize().catch(console.error);
 
 export { httpServer, wss }; 

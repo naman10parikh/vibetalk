@@ -4,14 +4,19 @@
   "description": "Voice-to-text extension for Cursor that transforms speech into Composer prompts",
   "main": "dist/index.js",
   "scripts": {
-    "build": "tsc && cp src/web/index.html dist/web/index.html && cp src/web/widget.js dist/web/widget.js",
+    "build": "tsc && cp src/web/index.html dist/web/index.html",
     "dev": "tsc --watch",
     "start": "npm run build && node dist/index.js",
     "web": "npm run build && node dist/web/server.js",
+    "web-working": "npm run build && node dist/web/working-server.js",
     "test-web": "npm run build && node dist/web/test-server.js",
     "test": "npm run build && node dist/test.js",
     "demo": "npm run build && node dist/demo.js",
     "test-cursor": "npm run build && node -e \"const {CursorAutomator} = require('./dist/cursor/automator'); new CursorAutomator().testAutomation().then(console.log);\"",
+    "test-localhost-focus": "npm run build && node dist/test-localhost-focus.js",
+    "test-focused-refresh": "npm run build && node dist/test-focused-refresh.js",
+    "test-enhanced-refresh": "node test-enhanced-refresh.js",
+    "test-auto-refresh": "node test-auto-refresh-e2e.js",
     "lint": "eslint src/**/*.ts",
     "format": "prettier --write src/**/*.ts"
   },
@@ -41,11 +46,14 @@
     "@typescript-eslint/parser": "^6.0.0",
     "eslint": "^8.0.0",
     "jest": "^29.0.0",
+    "playwright": "^1.53.1",
     "prettier": "^3.0.0",
+    "puppeteer": "^24.11.1",
     "typescript": "^5.0.0"
   },
   "dependencies": {
     "@types/ws": "^8.18.1",
+    "chokidar": "^4.0.3",
     "dotenv": "^16.0.0",
     "openai": "^4.0.0",
     "ws": "^8.18.3"

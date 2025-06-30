@@ -139,7 +139,7 @@ async function main() {
     await vibeTalk.setupTerminalInterface();
     
     // Keep the process alive and provide ongoing feedback
-    console.log('\n🚀 Vibe Talk is now running!');
+    console.log('\n⭐ Vibe Talk is now running!');
     console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
     console.log('🎙️  HOW TO USE:');
     console.log('   1. Press ENTER (or SPACE) to START recording');

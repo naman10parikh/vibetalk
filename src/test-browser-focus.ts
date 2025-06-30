@@ -25,7 +25,7 @@ async function testBrowserFocusScenario() {
     });
   });
   
-  console.log('\n🚀 Starting test...\n');
+  console.log('\n⭐ Starting test...\n');
   
   // Get current focused window (should be browser)
   console.log('1️⃣ Detecting current focused window...');

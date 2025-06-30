@@ -52,7 +52,7 @@ async function demo() {
     console.log('💡 Try clicking in the Composer text area and run this demo again');
   }
 
-  console.log('\n🚀 Demo complete! Next steps:');
+  console.log('\n⭐ Demo complete! Next steps:');
   console.log('1. Set your OpenAI API key: export OPENAI_API_KEY="your-key"');
   console.log('2. Run: npm start');
   console.log('3. Use the voice recording functionality!');

@@ -1,4 +1,4 @@
-# 🚀 Vibe Talk Setup Guide
+# ⭐ Vibe Talk Setup Guide
 
 Follow these steps to get Vibe Talk working on your macOS system.
 
@@ -88,7 +88,7 @@ This will:
 3. Try to open Composer (Cmd+I)
 4. Inject test text into Composer
 
-## 🚀 Step 6: Run Vibe Talk
+## ⭐ Step 6: Run Vibe Talk
 
 ### Option A: Terminal Only
 ```bash

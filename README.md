@@ -9,7 +9,7 @@ Vibe Talk is a Cursor extension that lets you speak your coding requests instead
 - 🎤 **One-Click Voice Recording** - Simple button to start voice input
 - 🧠 **AI-Powered Transcription** - Uses OpenAI Whisper for accurate speech-to-text
 - ⚡ **Seamless Integration** - Automatically injects transcribed text into Cursor Composer
-- 🚀 **Instant Workflow** - No more typing long prompts, just speak naturally
+- ⭐ **Instant Workflow** - No more typing long prompts, just speak naturally
 
 ## 🏗️ Project Status
 
@@ -20,9 +20,9 @@ Vibe Talk is a Cursor extension that lets you speak your coding requests instead
 - ✅ **Cursor Automation**: Successfully injects text into Cursor's Composer
 - ✅ **End-to-End Workflow**: Voice → Transcription → Cursor integration
 
-**🚀 Ready for Testing!** See [SETUP.md](./SETUP.md) for installation instructions.
+**⭐ Ready for Testing!** See [SETUP.md](./SETUP.md) for installation instructions.
 
-## 🚀 Quick Start
+## ⭐ Quick Start
 
 ```bash
 # Clone the repository
