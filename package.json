@@ -8,6 +8,7 @@
     "dev": "tsc --watch",
     "start": "npm run build && node dist/index.js",
     "web": "npm run build && node dist/web/server.js",
+    "web-enhanced": "npm run build && node dist/web/enhanced-server.js",
     "web-working": "npm run build && node dist/web/working-server.js",
     "test-web": "npm run build && node dist/web/test-server.js",
     "test": "npm run build && node dist/test.js",
@@ -16,6 +17,8 @@
     "test-localhost-focus": "npm run build && node dist/test-localhost-focus.js",
     "test-focused-refresh": "npm run build && node dist/test-focused-refresh.js",
     "test-enhanced-refresh": "node test-enhanced-refresh.js",
+    "test-enhanced-experience": "npm run build && node dist/test-enhanced-experience.js",
+    "test-e2e": "npm run build && node dist/test-e2e-experience.js",
     "test-auto-refresh": "node test-auto-refresh-e2e.js",
     "lint": "eslint src/**/*.ts",
     "format": "prettier --write src/**/*.ts"
