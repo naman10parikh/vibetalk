@@ -4,10 +4,11 @@
   "description": "Voice-to-text extension for Cursor that transforms speech into Composer prompts",
   "main": "dist/index.js",
   "scripts": {
-    "build": "tsc && cp src/web/index.html dist/web/index.html",
+    "build": "tsc && cp src/web/index.html dist/web/index.html && cp src/web/widget.js dist/web/widget.js",
     "dev": "tsc --watch",
     "start": "npm run build && node dist/index.js",
     "web": "npm run build && node dist/web/server.js",
+    "test-web": "npm run build && node dist/web/test-server.js",
     "test": "npm run build && node dist/test.js",
     "demo": "npm run build && node dist/demo.js",
     "test-cursor": "npm run build && node -e \"const {CursorAutomator} = require('./dist/cursor/automator'); new CursorAutomator().testAutomation().then(console.log);\"",
@@ -44,8 +45,10 @@
     "typescript": "^5.0.0"
   },
   "dependencies": {
+    "@types/ws": "^8.18.1",
     "dotenv": "^16.0.0",
-    "openai": "^4.0.0"
+    "openai": "^4.0.0",
+    "ws": "^8.18.3"
   },
   "engines": {
     "node": ">=18.0.0"
