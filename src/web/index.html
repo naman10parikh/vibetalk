@@ -1,0 +1,182 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>🎙️ Vibe Talk - Voice Control for Cursor</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            color: white;
+            padding: 20px;
+        }
+        
+        .container {
+            text-align: center;
+            max-width: 600px;
+            background: rgba(255, 255, 255, 0.1);
+            backdrop-filter: blur(10px);
+            border-radius: 20px;
+            padding: 40px;
+            border: 1px solid rgba(255, 255, 255, 0.2);
+        }
+        
+        .logo {
+            font-size: 4rem;
+            margin-bottom: 20px;
+        }
+        
+        h1 {
+            font-size: 2.5rem;
+            margin-bottom: 10px;
+            font-weight: 700;
+        }
+        
+        .subtitle {
+            font-size: 1.2rem;
+            margin-bottom: 30px;
+            opacity: 0.9;
+        }
+        
+        .status {
+            padding: 20px;
+            border-radius: 15px;
+            margin: 20px 0;
+            font-size: 1.1rem;
+            font-weight: 600;
+            transition: all 0.3s ease;
+        }
+        
+        .status.ready {
+            background: rgba(34, 197, 94, 0.2);
+            border: 2px solid rgba(34, 197, 94, 0.5);
+        }
+        
+        .status.recording {
+            background: rgba(239, 68, 68, 0.2);
+            border: 2px solid rgba(239, 68, 68, 0.5);
+            animation: pulse 1.5s infinite;
+        }
+        
+        .status.processing {
+            background: rgba(251, 191, 36, 0.2);
+            border: 2px solid rgba(251, 191, 36, 0.5);
+        }
+        
+        @keyframes pulse {
+            0% { transform: scale(1); }
+            50% { transform: scale(1.05); }
+            100% { transform: scale(1); }
+        }
+        
+        .instructions {
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 15px;
+            padding: 25px;
+            margin: 25px 0;
+            text-align: left;
+        }
+        
+        .instructions h3 {
+            margin-bottom: 15px;
+            color: #fbbf24;
+        }
+        
+        .instructions ol {
+            margin-left: 20px;
+        }
+        
+        .instructions li {
+            margin: 8px 0;
+            line-height: 1.6;
+        }
+        
+        .hotkey {
+            background: rgba(255, 255, 255, 0.2);
+            padding: 8px 16px;
+            border-radius: 8px;
+            font-family: 'Monaco', 'Consolas', monospace;
+            font-weight: bold;
+            margin: 0 5px;
+        }
+        
+        .footer {
+            margin-top: 30px;
+            opacity: 0.7;
+            font-size: 0.9rem;
+        }
+        
+        .tip {
+            background: rgba(59, 130, 246, 0.2);
+            border: 2px solid rgba(59, 130, 246, 0.5);
+            border-radius: 15px;
+            padding: 15px;
+            margin: 20px 0;
+            font-size: 0.95rem;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="logo">🎙️</div>
+        <h1>Vibe Talk</h1>
+        <p class="subtitle">Voice Control for Cursor IDE</p>
+        
+        <div class="status ready" id="status">
+            ✅ Ready for voice commands
+        </div>
+        
+        <div class="instructions">
+            <h3>🚀 How to Use:</h3>
+            <ol>
+                <li>Make sure the Vibe Talk service is running in your terminal</li>
+                <li>Keep Cursor open and ready</li>
+                <li>Press <span class="hotkey">ENTER</span> (or <span class="hotkey">SPACE</span>) in the terminal to start recording</li>
+                <li>Speak your coding request clearly</li>
+                <li>Press <span class="hotkey">ENTER</span> (or <span class="hotkey">SPACE</span>) again to stop and transcribe</li>
+                <li>Watch your text appear in Cursor Composer automatically!</li>
+            </ol>
+        </div>
+        
+        <div class="tip">
+            💡 <strong>Pro Tip:</strong> Keep this page open while coding for visual feedback. Press ENTER in your terminal to start/stop recording!
+        </div>
+        
+        <div class="footer">
+            Built with ❤️ for seamless voice-to-code workflow
+        </div>
+    </div>
+
+    <script>
+        // Simple status simulation - in a real implementation, this would connect to the backend
+        function updateStatus(message, className) {
+            const status = document.getElementById('status');
+            status.textContent = message;
+            status.className = 'status ' + className;
+        }
+        
+        // Note: Status updates would be handled by the backend service in a real implementation
+        // For now, this page provides static instructions
+        
+        console.log('🎙️ Vibe Talk Interface Loaded!');
+        console.log('💡 Use ENTER or SPACE in your terminal (where npm start is running) to control recording.');
+        console.log('📺 Keep this page open for visual reference while coding!');
+        
+        // Welcome message
+        console.log('🎙️ Vibe Talk Interface Loaded!');
+        console.log('Make sure to run "npm start" in your terminal to activate voice control.');
+    </script>
+</body>
+</html> 

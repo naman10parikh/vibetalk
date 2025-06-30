@@ -47,7 +47,7 @@ export class CursorAutomator {
    * Inject text into the active text field (assumed to be Composer)
    * This method tries multiple strategies for text injection
    */
-  async injectText(text: string): Promise<boolean> {
+  async injectText(text: string, autoSubmit: boolean = true): Promise<boolean> {
     try {
       // First, activate Cursor
       await this.activateCursor();
@@ -57,15 +57,24 @@ export class CursorAutomator {
 
       // Strategy 1: Try to use direct keystroke simulation
       const success1 = await this.injectViaKeystroke(text);
-      if (success1) return true;
+      if (success1) {
+        if (autoSubmit) await this.submitToComposer();
+        return true;
+      }
 
       // Strategy 2: Try to use clipboard and paste
       const success2 = await this.injectViaClipboard(text);
-      if (success2) return true;
+      if (success2) {
+        if (autoSubmit) await this.submitToComposer();
+        return true;
+      }
 
       // Strategy 3: Try to find Composer UI element specifically
       const success3 = await this.injectViaUIElement(text);
-      if (success3) return true;
+      if (success3) {
+        if (autoSubmit) await this.submitToComposer();
+        return true;
+      }
 
       return false;
     } catch (error) {
@@ -196,6 +205,30 @@ export class CursorAutomator {
       return true;
     } catch (error) {
       console.error('Error opening Composer:', error);
+      return false;
+    }
+  }
+
+  /**
+   * Submit the current text in Composer (press Enter)
+   */
+  async submitToComposer(): Promise<boolean> {
+    try {
+      await this.sleep(200); // Brief pause after text injection
+      
+      const script = `
+        tell application "System Events"
+          tell process "Cursor"
+            keystroke return
+          end tell
+        end tell
+      `;
+      
+      await execAsync(`osascript -e '${script}'`);
+      console.log('📤 Submitted text to Cursor Composer');
+      return true;
+    } catch (error) {
+      console.error('Error submitting to Composer:', error);
       return false;
     }
   }

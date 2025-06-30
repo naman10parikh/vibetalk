@@ -90,19 +90,39 @@ This will:
 
 ## 🚀 Step 6: Run Vibe Talk
 
-Once everything is configured:
-
+### Option A: Terminal Only
 ```bash
 npm start
 ```
 
-## ⌨️ Usage
+### Option B: With Web Interface (Recommended!)
+Open two terminals:
 
-1. **Start Vibe Talk**: `npm start`
-2. **Voice Recording**: Press Cmd+Shift+V (or your configured hotkey)
-3. **Speak**: Say your prompt clearly
-4. **Stop**: Press Cmd+Shift+V again to stop and transcribe
-5. **Magic**: Watch your speech appear in Cursor Composer!
+**Terminal 1** (Web Interface):
+```bash
+npm run web
+```
+Then open http://localhost:3000 in your browser for visual feedback.
+
+**Terminal 2** (Voice Service):
+```bash
+npm start
+```
+
+## ⌨️ Usage - Super Simple!
+
+1. **Keep the web interface open** in your browser (http://localhost:3000)
+2. **Make sure Cursor is running** and ready
+3. **Press ENTER** (or SPACE) in your terminal to start recording
+4. **Speak your coding request** clearly 
+5. **Press ENTER** (or SPACE) again to stop recording
+6. **Watch the magic happen**: 
+   - Audio gets transcribed by Whisper
+   - Text automatically appears in Cursor Composer
+   - Request gets submitted automatically!
+7. **Ready for the next command!**
+
+That's it! No clicking, no complex hotkeys - just press ENTER and speak! 🎉
 
 ## 🔧 Troubleshooting
 
@@ -129,9 +149,11 @@ npm start
 When everything is working, you should be able to:
 
 1. ✅ Run `npm test` with all green checkmarks
-2. ✅ Run `npm run demo` and see text appear in Cursor
-3. ✅ Record voice for 5+ seconds and get a transcript
-4. ✅ Have that transcript automatically appear in Cursor Composer
+2. ✅ Open the web interface at http://localhost:3000
+3. ✅ Press ENTER in terminal to start recording (see "Recording..." status)
+4. ✅ Speak for 5+ seconds and press ENTER again
+5. ✅ Watch your transcript automatically appear AND submit in Cursor Composer
+6. ✅ See "Ready for next command!" and repeat the process
 
 ## 💡 Tips
 
