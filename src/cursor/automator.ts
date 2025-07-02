@@ -4,6 +4,7 @@ import { promisify } from 'util';
 const execAsync = promisify(exec);
 
 export class CursorAutomator {
+  private hasInjectedBefore: boolean = false;
   
   /**
    * Check if Cursor is currently running
@@ -201,13 +202,18 @@ export class CursorAutomator {
   }
 
   /**
-   * Inject text into the active text field with improved focus management
+   * SIMPLIFIED text injection method that assumes Composer is open
+   * User should keep Composer open with agent mode and model selected
    */
   async injectText(text: string, autoSubmit: boolean = true): Promise<boolean> {
     let originalWindow: {app: string, title: string} | null = null;
     let shouldReturnToBrowser = false;
     
     try {
+      console.log(`🎙️ SIMPLIFIED INJECTION MODE`);
+      console.log(`📋 USER INSTRUCTION: Keep Composer open with agent mode and model selected`);
+      console.log(`📝 Voice command: "${text}"`);
+
       // Save the currently focused application and window FIRST
       originalWindow = await this.getCurrentFocusedWindow();
       console.log(`📱 Current window: ${originalWindow?.app} - "${originalWindow?.title}"`);
@@ -223,42 +229,24 @@ export class CursorAutomator {
 
       // Add helpful prefix to make the context clear for Cursor's AI
       const prefixedText = this.addVoiceCommandPrefix(text);
-      console.log(`📝 Original text: "${text}"`);
-      console.log(`🤖 Prefixed text: "${prefixedText}"`);
 
       let success = false;
+      const isFirstTranscription = !this.hasInjectedBefore;
 
-      // NEW APPROACH: Minimal interruption for localhost users (fast activation + immediate return)
       if (shouldReturnToBrowser) {
         console.log(`🚀 LOCALHOST MODE: Minimal interruption—quick Cursor interaction`);
         
-        // STEP 1: Quick activation of Cursor
-        console.log('⚡ Quick Cursor activation...');
+        // Quick activation of Cursor
         await this.activateCursor();
-        await this.sleep(300); // Short delay for activation
+        await this.sleep(300);
         
-        // STEP 2: Open Composer quickly
-        console.log('⚡ Opening Composer...');
-        await this.openComposer();
-        await this.sleep(400); // Short delay for Composer to open
+        // Simplified injection with endless retries
+        success = await this.simplifiedInjectWithRetries(prefixedText, autoSubmit, isFirstTranscription);
         
-        // STEP 3: Inject text rapidly
-        console.log('⚡ Injecting text...');
-        success = await this.injectViaClipboard(prefixedText);
-        if (!success) {
-          success = await this.injectViaKeystroke(prefixedText);
-        }
-        
-        // STEP 4: Auto-submit if requested
-        if (success && autoSubmit) {
-          console.log('⚡ Submitting...');
-          await this.submitToComposer();
-        }
-        
-        // STEP 5: IMMEDIATE focus return to browser (don't wait for processing)
-        if (success && originalWindow) {
+        // IMMEDIATE focus return to browser
+        if (originalWindow) {
           console.log(`⚡ Immediate return to ${originalWindow.app}...`);
-          await this.sleep(200); // Very brief pause to let submit register
+          await this.sleep(200);
           await this.returnFocusToApp(originalWindow.app);
           
           // Enhanced browser focus return for localhost
@@ -270,7 +258,7 @@ export class CursorAutomator {
         
         return success;
       } else {
-        // STANDARD MODE: For non-localhost usage (original behavior)
+        // STANDARD MODE: For non-localhost usage
         console.log(`🔄 STANDARD MODE: Normal Cursor interaction`);
         
         // Only proceed if we're not already in Cursor
@@ -280,39 +268,19 @@ export class CursorAutomator {
           await this.sleep(500);
         }
 
-        // ENSURE COMPOSER IS OPEN
-        await this.openComposer();
-        await this.sleep(300);
-
-        // Try different injection strategies
-        if (!success) {
-        success = await this.injectViaClipboard(prefixedText);
-        if (success) console.log('✅ Clipboard injection succeeded');
-      }
-
-      if (!success) {
-        success = await this.injectViaKeystroke(prefixedText);
-        if (success) console.log('✅ Keystroke injection succeeded');
-      }
-
-      if (!success) {
-        success = await this.injectViaUIElement(prefixedText);
-        if (success) console.log('✅ UI element injection succeeded');
-      }
-
-      if (success && autoSubmit) {
-        await this.submitToComposer();
-      }
+        // Simplified injection with endless retries
+        success = await this.simplifiedInjectWithRetries(prefixedText, autoSubmit, isFirstTranscription);
 
         // Standard focus return logic
-        if (success && originalWindow && originalWindow.app !== 'Cursor') {
-        await this.sleep(800);
+        if (originalWindow && originalWindow.app !== 'Cursor') {
+          await this.sleep(800);
           console.log(`🔄 Returning focus to ${originalWindow.app}...`);
           await this.returnFocusToApp(originalWindow.app);
           await this.sleep(300);
         }
       }
 
+      this.hasInjectedBefore = true;
       return success;
       
     } catch (error) {
@@ -345,6 +313,147 @@ export class CursorAutomator {
       
       return false;
     }
+  }
+
+  /**
+   * Simplified injection with endless retries
+   * Assumes Composer is open and just injects text
+   * First transcription: Cmd+I + Cmd+N
+   * Subsequent transcriptions: Only Cmd+I
+   * If no change detected after 30 seconds, press Cmd+I and retry
+   */
+  private async simplifiedInjectWithRetries(text: string, autoSubmit: boolean, isFirstTranscription: boolean): Promise<boolean> {
+    let attemptCount = 0;
+    
+    while (true) { // Endless retries as requested
+      attemptCount++;
+      console.log(`🔄 Simplified injection attempt ${attemptCount} ${isFirstTranscription && attemptCount === 1 ? '(FIRST TRANSCRIPTION)' : ''}`);
+      
+      try {
+        // For first transcription: Cmd+I + Cmd+N
+        // For subsequent: Only Cmd+I
+        if (isFirstTranscription && attemptCount === 1) {
+          console.log('🎯 First transcription: Sending Cmd+I + Cmd+N for new chat');
+          await this.sendCmdI();
+          await this.sleep(200);
+          await this.sendCmdN();
+          await this.sleep(400);
+        } else {
+          console.log('🎯 Subsequent attempt: Sending Cmd+I only');
+          await this.sendCmdI();
+          await this.sleep(400);
+        }
+        
+        // Inject text (assume Composer is now open)
+        console.log('💉 Injecting text (assuming Composer is open)');
+        let injectionSuccess = await this.injectViaClipboard(text);
+        
+        if (!injectionSuccess) {
+          // Fallback to keystroke
+          injectionSuccess = await this.injectViaKeystroke(text);
+        }
+        
+        if (injectionSuccess) {
+          console.log('✅ Text injection successful');
+          
+          // Submit if requested
+          if (autoSubmit) {
+            console.log('📤 Submitting to Composer');
+            await this.submitToComposer();
+          }
+          
+          // Wait 30 seconds to detect changes
+          console.log('⏳ Waiting 30 seconds to detect changes...');
+          const changeDetected = await this.waitForChanges(30000);
+          
+          if (changeDetected) {
+            console.log('✅ Changes detected! Injection successful');
+            return true;
+          } else {
+            console.log('❌ No changes detected after 30 seconds, assuming Composer was closed');
+            console.log('🔄 Will retry with Cmd+I...');
+            // Continue to next iteration (retry)
+          }
+        } else {
+          console.log('❌ Text injection failed, retrying...');
+          await this.sleep(2000); // Wait before retry
+          // Continue to next iteration (retry)
+        }
+        
+      } catch (error) {
+        console.error(`❌ Error in attempt ${attemptCount}:`, error);
+        await this.sleep(2000); // Wait before retry
+        // Continue to next iteration (retry)
+      }
+    }
+  }
+
+  /**
+   * Send Cmd+I to open Composer
+   */
+  private async sendCmdI(): Promise<void> {
+    const script = `
+      tell application "System Events"
+        tell process "Cursor"
+          keystroke "i" using command down
+        end tell
+      end tell
+    `;
+    await execAsync(`osascript -e '${script}'`);
+  }
+
+  /**
+   * Send Cmd+N for new chat (only on first transcription)
+   */
+  private async sendCmdN(): Promise<void> {
+    const script = `
+      tell application "System Events"
+        tell process "Cursor"
+          keystroke "n" using command down
+        end tell
+      end tell
+    `;
+    await execAsync(`osascript -e '${script}'`);
+  }
+
+  /**
+   * Wait for changes to be detected (simplified version)
+   * Returns true if changes detected, false if timeout
+   */
+  private async waitForChanges(timeoutMs: number): Promise<boolean> {
+    const startTime = Date.now();
+    const checkInterval = 2000; // Check every 2 seconds
+    
+    // Simple change detection - monitor clipboard content as a proxy
+    // This is a simplified approach - in reality you might want to monitor file changes
+    let initialState = '';
+    try {
+      const { stdout } = await execAsync('pbpaste');
+      initialState = stdout;
+    } catch (error) {
+      // Ignore clipboard read errors
+    }
+    
+    while (Date.now() - startTime < timeoutMs) {
+      await this.sleep(checkInterval);
+      
+      try {
+        // Check if clipboard content changed (as a simple proxy for activity)
+        const { stdout } = await execAsync('pbpaste');
+        if (stdout !== initialState) {
+          console.log('📋 Clipboard change detected (possible activity indicator)');
+          return true;
+        }
+      } catch (error) {
+        // Ignore clipboard read errors
+      }
+      
+      // For now, we'll use a simplified approach and assume changes occurred
+      // In a real implementation, you might monitor file timestamps or other indicators
+      console.log(`⏳ Still waiting for changes... ${Math.round((Date.now() - startTime) / 1000)}s elapsed`);
+    }
+    
+    return false; // Timeout reached
   }
 
   /**
