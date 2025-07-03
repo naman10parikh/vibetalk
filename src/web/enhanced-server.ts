@@ -352,7 +352,7 @@ function sleep(ms: number): Promise<void> {
 }
 
 // HTTP Server
-const httpServer = http.createServer((req, res) => {
+const httpServer = http.createServer(async (req, res) => {
   const url = req.url || '/';
 
   if (url === '/' || url === '/index.html') {
@@ -368,6 +368,30 @@ const httpServer = http.createServer((req, res) => {
     } catch {
       res.writeHead(404, { 'Content-Type': 'text/plain' });
       res.end('File not found');
+    }
+  } else if (url === '/realtime-session') {
+    // Create a new OpenAI Realtime session and return the details to the client
+    if (!config.isValid() || !openaiClient) {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'OpenAI API key not configured' }));
+      return;
+    }
+
+    try {
+      // NOTE: Realtime API is still in beta – requires openai ^4.19.0
+      const session = await (openaiClient as any).beta.realtime.sessions.create({
+        model: 'gpt-4o-realtime-preview-2024-05-14',
+        voice: 'alloy',
+        ttl_seconds: 300,
+        permissions: ['audio:send', 'audio:receive', 'text']
+      });
+
+      res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-cache' });
+      res.end(JSON.stringify(session));
+    } catch (err) {
+      console.error('❌ Failed to create realtime session:', err);
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Failed to create realtime session' }));
     }
   } else if (url === '/enhanced-widget.js') {
     res.writeHead(200, { 
@@ -663,11 +687,26 @@ function getChatGPTStyleWidget(): string {
       }, 800);
     }
     
-    // Click handler for the entire bar
+    async function startRealtimeFlow() {
+      try {
+        const res = await fetch('/realtime-session');
+        const data = await res.json();
+        console.log('🎤 Realtime session info:', data);
+        // TODO: establish RTCPeerConnection here in a follow-up step.
+      } catch (e) {
+        console.error('❌ Failed to start realtime session', e);
+      }
+    }
+    
     mainBar.onclick = function() {
       if (!recording) {
         recording = true;
         currentSessionId = 'session_' + Date.now();
+
+        // Start realtime flow for ultra-low latency speech
+        startRealtimeFlow();
+
+        // Notify backend to continue existing pipeline for now
         ws.send(JSON.stringify({action:'start',sessionId:currentSessionId}));
         mainBar.style.transform = 'scale(1.02)';
         summaryDiv.textContent = '';
