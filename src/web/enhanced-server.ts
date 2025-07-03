@@ -14,6 +14,9 @@ import OpenAI from 'openai';
 
 const execAsync = promisify(exec);
 
+// Preserve original console.log for later use
+const nativeLog = console.log;
+
 // Initialize VibeTalk components
 const config = new Config();
 const audioRecorder = new AudioRecorder();
@@ -22,15 +25,56 @@ const cursorAutomator = new CursorAutomator();
 const openaiClient = config.isValid() ? new OpenAI({ apiKey: config.openaiApiKey }) : null;
 fs.mkdirSync(path.join(process.cwd(), 'temp'), { recursive: true });
 
+// Track server start for elapsed-time logging
+const startTime = Date.now();
+
 // Enhanced state management
 let currentConnections = new Set<any>();
 let isRecording = false;
 let sessionId = '';
-let latestSessionId = null;
+let latestSessionId: string | null = null;
+let sessionBaseline: Record<string, string> = {};
+// Periodic summary interval handles
+const sessionIntervals: Record<string, NodeJS.Timeout> = {};
 
 // Ports
 const HTTP_PORT = process.env.PORT ? parseInt(process.env.PORT) : 3000;
 const WS_PORT = process.env.WS_PORT ? parseInt(process.env.WS_PORT) : HTTP_PORT + 1;
+
+// Flush buffered status every 4 s to sound more natural
+const SUMMARY_FLUSH_MS = 4000;
+
+// Track last spoken summary per session to avoid repeats
+interface LastSummaryInfo { text: string; time: number; }
+const lastSummary: Record<string, LastSummaryInfo> = {};
+
+// ────────────────────────────────────────────────────────────────────────────────
+// Session-level status buffering so we can create short, spoken summaries instead
+// of dumping every low-level log line on the user.
+interface SessionState { buffer: string[]; timeout?: NodeJS.Timeout; }
+const sessionState: Record<string, SessionState> = {};
+
+// Helper: generate TTS for status updates and broadcast to clients
+async function queueStatusSpeech(text: string, targetSessionId?: string) {
+  if (!openaiClient) return;
+  try {
+    const fileName = await generateSpeechAudio(text);
+    if (fileName) {
+      broadcastToClients({
+        type: 'status-audio',
+        audioUrl: `/speech/${fileName}`,
+        sessionId: targetSessionId
+      });
+    }
+  } catch (err) {
+    console.error('❌ Failed to generate status speech:', err);
+  }
+}
+
+// Utility: remove leading emojis/symbols for cleaner speech output
+function stripEmoji(t: string): string {
+  return t.replace(/^[^a-zA-Z0-9]+/, '').trim();
+}
 
 // Enhanced message broadcasting with detailed status
 function broadcastToClients(message: any): void {
@@ -47,8 +91,74 @@ function broadcastToClients(message: any): void {
     }
   });
   
+  // Buffer low-level status + progress so we can speak a short summary later.
+  if ([ 'voice-status', 'progress', 'log' ].includes(message.type) && message.message) {
+    // Skip early microphone prompts – they should be visual only.
+    if (message.step && ['initializing', 'listening'].includes(message.step)) {
+      // No spoken summary for these, as they often become stale quickly.
+    } else {
+      const sid = message.sessionId ?? sessionId;
+      const st = (sessionState[sid] ||= { buffer: [] });
+      st.buffer.push(stripEmoji(message.message));
+
+      clearTimeout(st.timeout);
+      // Flush every ~2 s so updates sound timely and natural
+      const delay = SUMMARY_FLUSH_MS;
+      st.timeout = setTimeout(() => flushStatusSummary(sid), delay);
+    }
+  }
+  
   // Log detailed status for debugging
-  console.log(`📡 Broadcasting: ${message.type} - ${message.message || message.status}`);
+  nativeLog(`📡 Broadcasting: ${message.type} - ${message.message || message.status}`);
+}
+
+// ===== Console.log Override =====
+// Funnel all subsequent console logs to clients as generic 'log' entries
+console.log = (...args: any[]) => {
+  nativeLog(...args);
+  try {
+    const text = args.map(a => (typeof a === 'object' ? JSON.stringify(a) : String(a))).join(' ');
+    broadcastToClients({ type: 'log', message: text });
+  } catch {/* swallow */}
+};
+
+// Summarise buffered status messages into ONE friendly spoken sentence
+async function flushStatusSummary(sid: string) {
+  const st = sessionState[sid];
+  if (!st || st.buffer.length === 0) return;
+  const raw = st.buffer.join(' · ');
+  st.buffer.length = 0;
+
+  let spoken = raw;
+  if (openaiClient) {
+    try {
+      const completion = await openaiClient.chat.completions.create({
+        model: 'gpt-4o-mini',
+        messages: [
+          { role: 'system', content: 'You are a friendly developer buddy. Turn the following status logs into ONE super-concise, chill spoken update (<=12 words). Keep it casual and upbeat.' },
+          { role: 'user', content: raw }
+        ]
+      });
+      spoken = completion.choices[0]?.message?.content?.trim() || raw;
+    } catch (err) {
+      console.error('❌ GPT summarisation failed:', err);
+    }
+  }
+
+  const now = Date.now();
+  const last = lastSummary[sid];
+  if (last && spoken === last.text && now - last.time < 20000) {
+    return; // skip identical summary within 20s window
+  }
+  lastSummary[sid] = { text: spoken, time: now };
+
+  const file = await generateSpeechAudio(spoken);
+  broadcastToClients({
+    type: 'assistant',
+    text: spoken,
+    audioUrl: file ? `/speech/${file}` : undefined,
+    sessionId: sid
+  });
 }
 
 // Enhanced auto-refresh with detailed progress
@@ -80,7 +190,12 @@ class EnhancedAutoRefresh {
       const p = path.join(process.cwd(), 'src/web/index.html');
       const st = fs.statSync(p).mtimeMs;
       if (st > this.lastMTime) {
-        console.log('📁 Change detected - starting enhanced rebuild...');
+        // Log changed files with elapsed time
+        const { stdout: changedStd } = await execAsync('git diff --name-only');
+        const files = changedStd.split('\n').filter(Boolean);
+        const elapsed1 = ((Date.now() - startTime) / 1000).toFixed(1);
+        console.log(`[+${elapsed1}s] 📂 Files changed: ${files.join(', ') || 'none'}`);
+        console.log(`[+${elapsed1}s] 📁 Change detected - starting enhanced rebuild...`);
         this.lastMTime = st;
         this.building = true;
         
@@ -148,6 +263,8 @@ class EnhancedAutoRefresh {
           }
         });
         
+        const elapsed2 = ((Date.now() - startTime) / 1000).toFixed(1);
+        console.log(`[+${elapsed2}s] ✅ Enhanced rebuild complete`);
         this.building = false;
         console.log('✅ Enhanced rebuild complete');
       }
@@ -164,10 +281,28 @@ class EnhancedAutoRefresh {
 
 // Enhanced voice command handler with detailed progress
 async function handleVoiceCommand(action: 'start' | 'stop', sessionId: string): Promise<void> {
+  // Record baseline commit SHA at session start to scope file diffs
+  if (action === 'start') {
+    try {
+      const { stdout: sha } = await execAsync('git rev-parse HEAD');
+      sessionBaseline[sessionId] = sha.trim();
+    } catch (err) {
+      console.error('❌ Failed to record baseline SHA:', err);
+    }
+  }
   if (action === 'start' && !isRecording) {
     try {
       console.log(`🎤 Starting enhanced voice session: ${sessionId}`);
       isRecording = true;
+      
+      // Start periodic summary interval (every 5s)
+      if (!sessionIntervals[sessionId]) {
+        sessionIntervals[sessionId] = setInterval(() => {
+          if (sessionState[sessionId]?.buffer.length) {
+            flushStatusSummary(sessionId);
+          }
+        }, 5000);
+      }
       
       // Step 1: Initializing
       broadcastToClients({ 
@@ -276,6 +411,8 @@ async function handleVoiceCommand(action: 'start' | 'stop', sessionId: string): 
         sessionId
       });
       
+      // (Disabled) Do not generate immediate assistant chit-chat; rely on log-driven summaries instead.
+      
       await sleep(600);
       
       // Step 4: Sending to Cursor
@@ -325,6 +462,12 @@ async function handleVoiceCommand(action: 'start' | 'stop', sessionId: string): 
         
         console.log('✅ Enhanced command sent to Cursor AI');
         
+        // Clear periodic interval for this session when stop is called
+        if (sessionIntervals[sessionId]) {
+          clearInterval(sessionIntervals[sessionId]);
+          delete sessionIntervals[sessionId];
+        }
+        
       } else {
         broadcastToClients({ 
           type: 'error', 
@@ -352,7 +495,7 @@ function sleep(ms: number): Promise<void> {
 }
 
 // HTTP Server
-const httpServer = http.createServer(async (req, res) => {
+const httpServer = http.createServer((req, res) => {
   const url = req.url || '/';
 
   if (url === '/' || url === '/index.html') {
@@ -368,28 +511,6 @@ const httpServer = http.createServer(async (req, res) => {
     } catch {
       res.writeHead(404, { 'Content-Type': 'text/plain' });
       res.end('File not found');
-    }
-  } else if (url === '/realtime-session') {
-    // Create a new OpenAI Realtime session and return the details to the client
-    if (!config.isValid() || !openaiClient) {
-      res.writeHead(500, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'OpenAI API key not configured' }));
-      return;
-    }
-
-    try {
-      // NOTE: Realtime API is still in beta – requires openai ^4.19.0
-      const session = await (openaiClient as any).beta.realtime.sessions.create({
-        model: 'gpt-4o-realtime-preview-2024-05-14',
-        voice: 'alloy'
-      });
-
-      res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-cache' });
-      res.end(JSON.stringify(session));
-    } catch (err) {
-      console.error('❌ Failed to create realtime session:', err);
-      res.writeHead(500, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Failed to create realtime session' }));
     }
   } else if (url === '/enhanced-widget.js') {
     res.writeHead(200, { 
@@ -424,9 +545,31 @@ function getChatGPTStyleWidget(): string {
     var ws = null;
     var currentStep = '';
     var currentSessionId = null;
-    var summaryDiv = document.createElement('div');
-    summaryDiv.style.cssText = 'display:none;';
-    
+
+    // 🔊 Simple audio queue to avoid overlapping voices
+    var audioQueue = [];
+    var isPlayingAudio = false;
+    function enqueueAudio(url) {
+      if (!url) return;
+      // Keep the queue short so updates don't get stale
+      if (audioQueue.length > 3) {
+        audioQueue.shift(); // drop the oldest pending audio
+      }
+      audioQueue.push(url);
+      playNextAudio();
+    }
+    function playNextAudio() {
+      if (isPlayingAudio || audioQueue.length === 0) return;
+      var url = audioQueue.shift();
+      var audio = new Audio(url);
+      isPlayingAudio = true;
+      audio.onended = audio.onerror = function() {
+        isPlayingAudio = false;
+        playNextAudio();
+      };
+      audio.play();
+    }
+
     // Main container - ChatGPT style
     var container = document.createElement('div');
     container.id = 'vibetalk-widget';
@@ -518,6 +661,10 @@ function getChatGPTStyleWidget(): string {
     mainBar.appendChild(actionBtn);
     mainBar.appendChild(progressBar);
     container.appendChild(mainBar);
+
+    // Restore summary div for future text messages
+    var summaryDiv = document.createElement('div');
+    summaryDiv.style.cssText = 'display:none;';
     container.appendChild(summaryDiv);
     document.body.appendChild(container);
 
@@ -569,6 +716,14 @@ function getChatGPTStyleWidget(): string {
           break;
         case 'summary':
           handleSummary(message);
+          break;
+        case 'status-audio':
+          if (message.audioUrl) {
+            enqueueAudio(message.audioUrl);
+          }
+          break;
+        case 'assistant':
+          handleAssistant(message);
           break;
         case 'refresh-now':
           showRefreshAnimation();
@@ -642,10 +797,21 @@ function getChatGPTStyleWidget(): string {
     
     function handleSummary(message) {
       if (message.audioUrl) {
-        var audio = new Audio(message.audioUrl);
-        audio.play();
+        enqueueAudio(message.audioUrl);
       } else if (window.speechSynthesis && message.summary) {
         var utter = new window.SpeechSynthesisUtterance(message.summary);
+        utter.rate = 1.05;
+        window.speechSynthesis.cancel();
+        window.speechSynthesis.speak(utter);
+      }
+    }
+    
+    // Handle friendly assistant replies
+    function handleAssistant(message) {
+      if (message.audioUrl) {
+        enqueueAudio(message.audioUrl);
+      } else if (window.speechSynthesis && message.text) {
+        var utter = new window.SpeechSynthesisUtterance(message.text);
         utter.rate = 1.05;
         window.speechSynthesis.cancel();
         window.speechSynthesis.speak(utter);
@@ -685,108 +851,16 @@ function getChatGPTStyleWidget(): string {
       }, 800);
     }
     
-    // Realtime WebRTC helpers
-    var realtimePc = null;
-    var localStream = null;
-    var audioSink = null;
-
-    async function startRealtimeFlow() {
-      try {
-        const res = await fetch('/realtime-session');
-        const session = await res.json();
-        console.log('🎤 Realtime session:', session);
-
-        // 1. Prepare PeerConnection
-        realtimePc = new RTCPeerConnection({ iceServers: session.ice_servers || [] });
-
-        // 2. Capture microphone audio
-        localStream = await navigator.mediaDevices.getUserMedia({ audio: true });
-        localStream.getAudioTracks().forEach(t => realtimePc.addTrack(t, localStream));
-
-        // 3. Play assistant audio when received
-        realtimePc.ontrack = function(ev) {
-          if (!audioSink) {
-            audioSink = new Audio();
-            audioSink.autoplay = true;
-          }
-          audioSink.srcObject = ev.streams[0];
-        };
-
-        // 4. Optional data channel for future events
-        realtimePc.createDataChannel('oai-events');
-
-        // 5. ICE candidate logging (optional)
-        realtimePc.onicecandidate = (e) => {
-          if (e.candidate) console.log('ICE cand:', e.candidate.candidate);
-        };
-
-        // 6. Create SDP offer
-        const offer = await realtimePc.createOffer();
-        await realtimePc.setLocalDescription(offer);
-
-        // 7. Send offer to OpenAI Realtime to obtain answer
-        const answerResp = await fetch('https://api.openai.com/v1/realtime/sessions/' + session.id + '/offer', {
-          method: 'POST',
-          headers: {
-            'Authorization': 'Bearer ' + session.client_secret.value,
-            'Content-Type': 'application/sdp'
-          },
-          body: offer.sdp
-        });
-
-        if (!answerResp.ok) {
-          throw new Error('Failed to exchange SDP: ' + answerResp.status);
-        }
-
-        const answerSdp = await answerResp.text();
-        await realtimePc.setRemoteDescription({ type: 'answer', sdp: answerSdp });
-
-        updateStatus('Realtime connected', '🔊', '#10a37f');
-
-        // Immediate acknowledgement speech (local browser TTS)
-        if (window.speechSynthesis) {
-          var ackUtter = new window.SpeechSynthesisUtterance('Got it, working on that.');
-          ackUtter.rate = 1.05;
-          window.speechSynthesis.speak(ackUtter);
-        }
-
-      } catch (e) {
-        console.error('❌ Realtime flow error', e);
-        updateStatus('Realtime error', '❌', '#ef4444');
-      }
-    }
-
-    function stopRealtimeFlow() {
-      if (realtimePc) {
-        realtimePc.close();
-        realtimePc = null;
-      }
-      if (localStream) {
-        localStream.getTracks().forEach(t => t.stop());
-        localStream = null;
-      }
-      if (audioSink) {
-        audioSink.pause();
-        audioSink.srcObject = null;
-        audioSink = null;
-      }
-    }
-    
+    // Click handler for the entire bar
     mainBar.onclick = function() {
       if (!recording) {
         recording = true;
         currentSessionId = 'session_' + Date.now();
-
-        // Start realtime flow for ultra-low latency speech
-        startRealtimeFlow();
-
-        // Notify backend to continue existing pipeline for now
         ws.send(JSON.stringify({action:'start',sessionId:currentSessionId}));
         mainBar.style.transform = 'scale(1.02)';
         summaryDiv.textContent = '';
       } else {
         recording = false;
-        stopRealtimeFlow();
         ws.send(JSON.stringify({action:'stop',sessionId:currentSessionId}));
         mainBar.style.transform = 'scale(1)';
       }
@@ -849,25 +923,82 @@ wss.on('connection', ws => {
 
 // Helper: summarize diff + transcript into friendly summary
 async function generateFriendlySummary(transcript: string): Promise<string> {
-  if (!openaiClient) return `Code updated for: "${transcript}"`;
+  // Determine baseline for this session
+  const baseline = latestSessionId ? sessionBaseline[latestSessionId] || null : null;
+  // Fallback when no API key – keep it deterministic and grounded.
+  if (!openaiClient) {
+    try {
+      let diff = '';
+      let filesChanged: string[] = [];
+      if (baseline) {
+        let listStd = '';
+        let diffStd = '';
+        listStd = (await execAsync(`git diff --name-only ${baseline}`)).stdout;
+        diffStd = (await execAsync(`git diff --unified=0 ${baseline}`)).stdout;
+        filesChanged = listStd.split('\n').filter(Boolean).slice(0, 20);
+        diff = diffStd.slice(0, 6000);
+      } else {
+        const { stdout } = await execAsync('git diff --name-only');
+        filesChanged = stdout.split('\n').filter(Boolean);
+        if (filesChanged.length === 0) {
+          return `No file changes detected for request: "${transcript}"`;
+        }
+        return `Changed files: ${filesChanged.join(', ')} – request: "${transcript}"`;
+      }
+      return `Changed files: ${filesChanged.join(', ')} – request: "${transcript}"`;
+    } catch {
+      return `Code updated for: "${transcript}"`;
+    }
+  }
+
+  // When API key is present, craft a grounded, file-aware summary.
   let diff = '';
+  let filesChanged: string[] = [];
   try {
-    const { stdout } = await execAsync('git diff --unified=0');
-    diff = stdout.slice(0, 6000); // cap size to keep prompt small
+    // Capture changed file list (max 20 for brevity).
+    if (baseline) {
+      let listStd = '';
+      let diffStd = '';
+      listStd = (await execAsync(`git diff --name-only ${baseline}`)).stdout;
+      diffStd = (await execAsync(`git diff --unified=0 ${baseline}`)).stdout;
+      filesChanged = listStd.split('\n').filter(Boolean).slice(0, 20);
+      diff = diffStd.slice(0, 6000); // keep prompt small, ~6K chars
+    } else {
+      const { stdout: listStd } = await execAsync('git diff --name-only');
+      filesChanged = listStd.split('\n').filter(Boolean).slice(0, 20);
+      const { stdout: diffStd } = await execAsync('git diff --unified=0');
+      diff = diffStd.slice(0, 6000); // keep prompt small, ~6K chars
+    }
   } catch {}
+
+  // Build the prompt emphasising the checklist guidelines.
+  const systemPrompt = `You are a diligent release note generator.\n\n` +
+    `Rules you MUST follow:\n` +
+    `1. ONLY use the supplied git diff – do NOT invent details.\n` +
+    `2. Start with "+ Files changed:" then list unique file paths comma-separated.\n` +
+    `3. After that, give a one-sentence project-level summary (<20 words).\n` +
+    `4. Then, for EACH file, provide a bullet (max 1 sentence) describing the modification in plain language.\n` +
+    `5. If diff is empty, say "No file changes detected."`;
+
+  const userPrompt = `User voice request: "${transcript}"\n\nChanged files detected: ${filesChanged.join(', ') || '[none]'}\n\nGit diff:\n${diff || '[no diff detected]'}`;
+
   try {
-    const completion = await openaiClient!.chat.completions.create({
+    const completion = await openaiClient.chat.completions.create({
       model: 'gpt-4o-mini',
       messages: [
-        { role: 'system', content: 'You are a helpful coding assistant. Summarize the code diff below in a short, cheerful tone. If no diff, still explain what you just did.' },
-        { role: 'user', content: `Here is the user request: ${transcript}\n\nHere is the git diff:\n${diff || '[no diff detected]'}` }
-      ]
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content: userPrompt }
+      ],
+      max_tokens: 180
     });
-    const aiContent = completion.choices[0]?.message?.content;
-    return (aiContent ?? `Code updated for: "${transcript}"`).trim();
+    const aiContent = completion.choices[0]?.message?.content ?? '';
+    return aiContent.trim();
   } catch (err) {
     console.error('❌ Failed to generate diff summary:', err);
-    return `Code updated for: "${transcript}"`;
+    if (filesChanged.length === 0) {
+      return `No file changes detected for request: "${transcript}"`;
+    }
+    return `Changed files: ${filesChanged.join(', ')} – request: "${transcript}"`;
   }
 }
 
@@ -879,7 +1010,7 @@ async function generateSpeechAudio(text: string): Promise<string | null> {
       model: 'tts-1',
       voice: 'alloy',
       input: text,
-      speed: 1.1
+      speed: 1.11
     });
     const buffer = Buffer.from(await mp3.arrayBuffer());
     const fileName = `speech_${Date.now()}.mp3`;
@@ -909,3 +1040,5 @@ httpServer.listen(HTTP_PORT, () => {
   console.log('🎤 ChatGPT-style voice interface ready!');
   console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
 });
+
+export { httpServer, wss };
