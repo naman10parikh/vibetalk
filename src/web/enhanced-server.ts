@@ -23,6 +23,7 @@ const cursorAutomator = new CursorAutomator();
 let currentConnections = new Set<any>();
 let isRecording = false;
 let sessionId = '';
+let latestSessionId = null;
 
 // Ports
 const HTTP_PORT = process.env.PORT ? parseInt(process.env.PORT) : 3000;
@@ -159,10 +160,9 @@ class EnhancedAutoRefresh {
 }
 
 // Enhanced voice command handler with detailed progress
-async function handleVoiceCommand(action: 'start' | 'stop'): Promise<void> {
+async function handleVoiceCommand(action: 'start' | 'stop', sessionId: string): Promise<void> {
   if (action === 'start' && !isRecording) {
     try {
-      sessionId = `session_${Date.now()}`;
       console.log(`🎤 Starting enhanced voice session: ${sessionId}`);
       isRecording = true;
       
@@ -171,7 +171,8 @@ async function handleVoiceCommand(action: 'start' | 'stop'): Promise<void> {
         type: 'voice-status', 
         step: 'initializing',
         message: '🎤 Initializing voice recording',
-        status: 'listening-start'
+        status: 'listening-start',
+        sessionId
       });
       
       await audioRecorder.startRecording();
@@ -182,7 +183,8 @@ async function handleVoiceCommand(action: 'start' | 'stop'): Promise<void> {
         type: 'voice-status', 
         step: 'listening',
         message: '👂 Listening - speak your command clearly',
-        status: 'listening-active'
+        status: 'listening-active',
+        sessionId
       });
       
       console.log('✅ Enhanced voice recording started');
@@ -193,7 +195,8 @@ async function handleVoiceCommand(action: 'start' | 'stop'): Promise<void> {
       broadcastToClients({ 
         type: 'error', 
         message: 'Failed to start recording. Please check microphone permissions.',
-        step: 'error'
+        step: 'error',
+        sessionId
       });
     }
     
@@ -206,7 +209,8 @@ async function handleVoiceCommand(action: 'start' | 'stop'): Promise<void> {
         type: 'voice-status', 
         step: 'processing',
         message: '⏸️ Processing your voice input',
-        status: 'processing'
+        status: 'processing',
+        sessionId
       });
       
       const audioPath = await audioRecorder.stopRecording();
@@ -216,7 +220,8 @@ async function handleVoiceCommand(action: 'start' | 'stop'): Promise<void> {
         broadcastToClients({ 
           type: 'error', 
           message: 'No audio captured. Please try speaking again.',
-          step: 'error'
+          step: 'error',
+          sessionId
         });
         return;
       }
@@ -228,14 +233,16 @@ async function handleVoiceCommand(action: 'start' | 'stop'): Promise<void> {
         type: 'voice-status', 
         step: 'transcribing',
         message: '🧠 Converting speech to text with AI',
-        status: 'transcribing'
+        status: 'transcribing',
+        sessionId
       });
       
       if (!config.isValid() || !whisperClient) {
         broadcastToClients({ 
           type: 'error', 
           message: 'OpenAI API key not configured',
-          step: 'error'
+          step: 'error',
+          sessionId
         });
         audioRecorder.cleanup(audioPath);
         return;
@@ -248,7 +255,8 @@ async function handleVoiceCommand(action: 'start' | 'stop'): Promise<void> {
         broadcastToClients({ 
           type: 'error', 
           message: 'Could not understand speech. Please try speaking more clearly.',
-          step: 'error'
+          step: 'error',
+          sessionId
         });
         return;
       }
@@ -261,7 +269,8 @@ async function handleVoiceCommand(action: 'start' | 'stop'): Promise<void> {
         type: 'transcription', 
         step: 'transcribed',
         message: `📝 Understood: "${transcript}"`,
-        transcript: transcript
+        transcript: transcript,
+        sessionId
       });
       
       await sleep(600);
@@ -271,7 +280,8 @@ async function handleVoiceCommand(action: 'start' | 'stop'): Promise<void> {
         type: 'voice-status', 
         step: 'cursor-sending',
         message: '🎯 Sending command to Cursor AI',
-        status: 'cursor-processing'
+        status: 'cursor-processing',
+        sessionId
       });
       
       const success = await cursorAutomator.injectText(transcript, true);
@@ -284,7 +294,8 @@ async function handleVoiceCommand(action: 'start' | 'stop'): Promise<void> {
           type: 'voice-status', 
           step: 'ai-processing',
           message: '🤖 Cursor AI is analyzing and executing your request',
-          status: 'ai-working'
+          status: 'ai-working',
+          sessionId
         });
         
         await sleep(800);
@@ -294,17 +305,25 @@ async function handleVoiceCommand(action: 'start' | 'stop'): Promise<void> {
           type: 'voice-status', 
           step: 'waiting-changes',
           message: '⏳ Waiting for code changes to be applied',
-          status: 'waiting'
+          status: 'waiting',
+          sessionId
         });
         
-        // The auto-refresh system will handle the rest
+        // After code changes, send summary
+        broadcastToClients({
+          type: 'summary',
+          summary: `Code updated for: "${transcript}"`,
+          sessionId
+        });
+        
         console.log('✅ Enhanced command sent to Cursor AI');
         
       } else {
         broadcastToClients({ 
           type: 'error', 
           message: 'Failed to send command to Cursor. Please ensure Cursor is open.',
-          step: 'error'
+          step: 'error',
+          sessionId
         });
       }
       
@@ -314,7 +333,8 @@ async function handleVoiceCommand(action: 'start' | 'stop'): Promise<void> {
       broadcastToClients({ 
         type: 'error', 
         message: `Processing failed: ${error instanceof Error ? error.message : String(error)}`,
-        step: 'error'
+        step: 'error',
+        sessionId
       });
     }
   }
@@ -360,6 +380,9 @@ function getChatGPTStyleWidget(): string {
     var recording = false;
     var ws = null;
     var currentStep = '';
+    var currentSessionId = null;
+    var summaryDiv = document.createElement('div');
+    summaryDiv.style.cssText = 'margin-top:8px;color:#fbbf24;font-size:13px;text-align:center;min-height:18px;';
     
     // Main container - ChatGPT style
     var container = document.createElement('div');
@@ -452,6 +475,7 @@ function getChatGPTStyleWidget(): string {
     mainBar.appendChild(actionBtn);
     mainBar.appendChild(progressBar);
     container.appendChild(mainBar);
+    container.appendChild(summaryDiv);
     document.body.appendChild(container);
 
     // WebSocket connection
@@ -485,6 +509,8 @@ function getChatGPTStyleWidget(): string {
     }
     
     function handleMessage(message) {
+      // Only process messages for the latest session
+      if (message.sessionId && currentSessionId && message.sessionId !== currentSessionId) return;
       switch (message.type) {
         case 'voice-status':
           handleVoiceStatus(message);
@@ -497,6 +523,9 @@ function getChatGPTStyleWidget(): string {
           break;
         case 'error':
           handleError(message);
+          break;
+        case 'summary':
+          handleSummary(message);
           break;
         case 'refresh-now':
           showRefreshAnimation();
@@ -568,6 +597,17 @@ function getChatGPTStyleWidget(): string {
       }, 4000);
     }
     
+    function handleSummary(message) {
+      summaryDiv.textContent = message.summary || '';
+      // Optionally play TTS
+      if (window.speechSynthesis && message.summary) {
+        var utter = new window.SpeechSynthesisUtterance(message.summary);
+        utter.rate = 1.05;
+        window.speechSynthesis.cancel();
+        window.speechSynthesis.speak(utter);
+      }
+    }
+    
     function updateStatus(text, icon, color) {
       statusText.textContent = text;
       voiceViz.innerHTML = icon;
@@ -605,11 +645,13 @@ function getChatGPTStyleWidget(): string {
     mainBar.onclick = function() {
       if (!recording) {
         recording = true;
-        ws.send('start');
+        currentSessionId = 'session_' + Date.now();
+        ws.send(JSON.stringify({action:'start',sessionId:currentSessionId}));
         mainBar.style.transform = 'scale(1.02)';
+        summaryDiv.textContent = '';
       } else {
         recording = false;
-        ws.send('stop');
+        ws.send(JSON.stringify({action:'stop',sessionId:currentSessionId}));
         mainBar.style.transform = 'scale(1)';
       }
     };
@@ -644,10 +686,17 @@ wss.on('connection', ws => {
   autoRefresh.addConnection(ws);
   
   ws.on('message', async (data) => {
-    const msg = data.toString();
-    if (msg === 'start' || msg === 'stop') {
-      console.log(`🎤 Enhanced voice command: ${msg}`);
-      await handleVoiceCommand(msg);
+    let msgObj;
+    try {
+      msgObj = JSON.parse(data.toString());
+    } catch {
+      msgObj = { action: data.toString() };
+    }
+    const { action, sessionId } = msgObj;
+    if ((action === 'start' || action === 'stop') && sessionId) {
+      latestSessionId = sessionId;
+      console.log(`🎤 Enhanced voice command: ${action} (${sessionId})`);
+      await handleVoiceCommand(action, sessionId);
     }
   });
   

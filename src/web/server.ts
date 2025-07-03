@@ -214,18 +214,24 @@ function getSimpleWidget(): string {
     micButton.title = 'Click to start/stop voice recording';
     micButton.style.cssText = 'background:#3b82f6;color:white;border:none;padding:10px;border-radius:50%;font-size:20px;cursor:pointer;transition:all 0.3s ease;';
     
+    var currentSessionId = null;
+    var summaryDiv = document.createElement('div');
+    summaryDiv.style.cssText = 'margin-top:8px;color:#fbbf24;font-size:13px;text-align:center;min-height:18px;';
+
     // Toggle recording on click
     var recording = false;
     micButton.onclick = function() {
       if (!recording) {
-        ws.send('start');
+        currentSessionId = 'session_' + Date.now();
+        ws.send(JSON.stringify({action:'start',sessionId:currentSessionId}));
         indicator.textContent = '🎤 Recording...';
         indicator.style.background = '#ef4444';
         micButton.style.background = '#ef4444';
         micButton.style.transform = 'scale(1.1)';
         recording = true;
+        summaryDiv.textContent = '';
       } else {
-        ws.send('stop');
+        ws.send(JSON.stringify({action:'stop',sessionId:currentSessionId}));
         indicator.textContent = '⏳ Processing...';
         indicator.style.background = '#f59e0b';
         micButton.style.background = '#3b82f6';
@@ -236,6 +242,7 @@ function getSimpleWidget(): string {
 
     container.appendChild(indicator);
     container.appendChild(micButton);
+    container.appendChild(summaryDiv);
     document.body.appendChild(container);
 
     // WebSocket for commands and auto-refresh
@@ -263,6 +270,8 @@ function getSimpleWidget(): string {
       // Handle JSON messages
       try {
         var message = JSON.parse(data);
+        // Only process messages for the latest session
+        if (message.sessionId && currentSessionId && message.sessionId !== currentSessionId) return;
         switch (message.type) {
           case 'status':
             indicator.textContent = message.message;
@@ -275,6 +284,15 @@ function getSimpleWidget(): string {
           case 'success':
             indicator.textContent = '✅ Success!';
             indicator.style.background = '#10b981';
+            if (message.summary) {
+              summaryDiv.textContent = message.summary;
+              if (window.speechSynthesis) {
+                var utter = new window.SpeechSynthesisUtterance(message.summary);
+                utter.rate = 1.05;
+                window.speechSynthesis.cancel();
+                window.speechSynthesis.speak(utter);
+              }
+            }
             setTimeout(function() {
               indicator.textContent = '✅ Ready';
               recording = false;

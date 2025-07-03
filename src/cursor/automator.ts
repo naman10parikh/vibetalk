@@ -6,6 +6,8 @@ const execAsync = promisify(exec);
 export class CursorAutomator {
   private hasInjectedBefore: boolean = false;
   private composerIsOpen: boolean = false; // Track if Composer is likely open
+  private currentInvocationId: number = 0; // Track current invocation for timeout cancellation
+  private firstCommandAttempted: boolean = false;
   
   /**
    * Check if Cursor is currently running
@@ -210,6 +212,17 @@ export class CursorAutomator {
     let originalWindow: {app: string, title: string} | null = null;
     let shouldReturnToBrowser = false;
     let originalLocalhostUrl: string | null = null;
+    
+    // Abort previous invocation to reset file-change timer
+    this.abortInvocation();
+    
+    // Mark that a command has been attempted (for first-command logic)
+    if (!this.firstCommandAttempted) {
+        console.log('🔵 This is the FIRST command attempt.');
+        this.firstCommandAttempted = true;
+    } else {
+        console.log('🟢 This is a SUBSEQUENT command attempt.');
+    }
     
     try {
       console.log(`🎙️ SIMPLIFIED INJECTION MODE`);
@@ -423,125 +436,122 @@ export class CursorAutomator {
     originalWindow?: {app: string, title: string} | null,
     originalLocalhostUrl?: string | null
   ): Promise<boolean> {
+    // Each invocation gets a unique id; abort if a new command comes in
+    const invocationId = ++this.currentInvocationId;
     const maxRetryMinutes = 5;
     const startTime = Date.now();
     let attemptCount = 0;
     
     console.log(`🧠 SMART INJECTION MODE`);
-    console.log(`📊 State: composerIsOpen=${this.composerIsOpen}, hasInjectedBefore=${this.hasInjectedBefore}`);
-    
+    console.log(`📊 State: composerIsOpen=${this.composerIsOpen}, hasInjectedBefore=${this.hasInjectedBefore}, firstCommandAttempted=${this.firstCommandAttempted}`);
+
+    // Track if this is the very first command ever
+    const isFirstCommand = !this.hasInjectedBefore;
+    let lastStrategy = '';
+
+    // Fallback escalation is per-command, not global. Each new command starts fresh.
     while (true) {
+      // If a new command comes in, abort this retry loop
+      if (this.currentInvocationId !== invocationId) {
+        console.log('⏹️ smartInjectWithFallbacks aborted due to new invocation');
+        return false;
+      }
       attemptCount++;
-      
-      // Safety timeout
       if (Date.now() - startTime > maxRetryMinutes * 60 * 1000) {
         console.log(`⏰ Smart injection timeout reached (${maxRetryMinutes} minutes). Giving up.`);
         return false;
       }
-      
       let strategy = '';
-      
       try {
-        // STRATEGY SELECTION based on state and attempt count
-        if (!this.hasInjectedBefore) { // Absolute first transcription for this session
-            strategy = 'NEW_CHAT'; // Always start with a new chat to be safe
-            console.log(`🎯 Strategy ${attemptCount}: NEW_CHAT (first transcription ever)`);
-            await this.ensureCursorFocus();
-            await this.sendCmdI();
-            await this.sleep(200);
-            await this.ensureCursorFocus();
-            await this.sendCmdN();
-            await this.sleep(400);
-        } else if (this.composerIsOpen || attemptCount === 1) { // If composer is known open, or it's the first attempt of a subsequent command
-            strategy = 'DIRECT_INJECT'; // Try direct inject first
-            console.log(`🎯 Strategy ${attemptCount}: DIRECT_INJECT (Composer assumed open or first retry attempt)`);
-            // No keyboard shortcuts, just inject
-        } else if (attemptCount <= 3) { // If direct inject failed, try reopening Composer
-            strategy = 'REOPEN_COMPOSER';
-            console.log(`🎯 Strategy ${attemptCount}: REOPEN_COMPOSER (Cmd+I)`);
-            await this.ensureCursorFocus();
-            await this.sendCmdI();
-            await this.sleep(400);
-        } else { // If reopening failed, force a new chat
-            strategy = 'FORCE_NEW_CHAT';
-            console.log(`🎯 Strategy ${attemptCount}: FORCE_NEW_CHAT (Cmd+I + Cmd+N)`);
-            await this.ensureCursorFocus();
-            await this.sendCmdI();
-            await this.sleep(200);
-            await this.ensureCursorFocus();
-            await this.sendCmdN();
-            await this.sleep(400);
+        // 1. Very first command ever: Cmd+I + Cmd+N + Direct Injection
+        if (isFirstCommand && attemptCount === 1) {
+          strategy = 'FIRST_COMMAND_CMDI_CMDN_DIRECT';
+          console.log('🎯 First command: Cmd+I + Cmd+N + Direct Injection');
+          await this.ensureCursorFocus();
+          await this.sendCmdI();
+          await this.sleep(200);
+          await this.ensureCursorFocus();
+          await this.sendCmdN();
+          await this.sleep(400);
+        // 2. For all subsequent commands, always start with direct injection (first attempt)
+        } else if (!isFirstCommand && attemptCount === 1) {
+          strategy = 'DIRECT_INJECT';
+          console.log('🎯 Subsequent command: Direct Injection');
+          // No keyboard shortcuts, just inject
+        // 3. If direct injection fails, fallback to Cmd+I + Direct Injection
+        } else if (attemptCount === 2) {
+          strategy = 'CMDI_DIRECT';
+          console.log('🎯 Fallback: Cmd+I + Direct Injection');
+          await this.ensureCursorFocus();
+          await this.sendCmdI();
+          await this.sleep(400);
+        // 4. If that fails, fallback to Cmd+I + Cmd+N + Direct Injection
+        } else {
+          strategy = 'CMDI_CMDN_DIRECT';
+          console.log('🎯 Fallback: Cmd+I + Cmd+N + Direct Injection');
+          await this.ensureCursorFocus();
+          await this.sendCmdI();
+          await this.sleep(200);
+          await this.ensureCursorFocus();
+          await this.sendCmdN();
+          await this.sleep(400);
         }
-        
+        lastStrategy = strategy;
         // INJECTION PHASE
         console.log('💉 Injecting text...');
         let injectionSuccess = await this.injectViaClipboard(text);
-        
         if (!injectionSuccess) {
           injectionSuccess = await this.injectViaKeystroke(text);
         }
-        
         if (injectionSuccess) {
           console.log('✅ Text injection successful');
           
-          // Submit if requested
+          // Mark that at least one injection has succeeded for this session
+          if (!this.hasInjectedBefore) {
+            this.hasInjectedBefore = true; // ensures future commands start with direct injection
+          }
+          
           if (autoSubmit) {
             console.log('📤 Submitting to Composer');
             await this.submitToComposer();
           }
-          
-          // For localhost mode: Return to browser immediately after injection
           if (isLocalhostMode && originalWindow) {
             console.log('🚀 LOCALHOST MODE: Returning to browser immediately...');
             await this.sleep(50);
-            
-            // Use specific localhost URL return
             if (this.isBrowserApp(originalWindow.app) && originalLocalhostUrl) {
               await this.returnFocusToBrowserWithLocalhost(originalLocalhostUrl);
             } else {
               await this.returnFocusToApp(originalWindow.app);
             }
           }
-          
-          // Monitor for file changes (same for both modes)
+          // Wait for file changes (60 second timeout)
           console.log('⏳ Waiting for file changes (60 second timeout)...');
           const changeDetected = await this.waitForFileChanges(60000);
-          
           if (changeDetected) {
             console.log('✅ FILE CHANGES DETECTED! Command processed successfully.');
-            console.log('🎯 Marking Composer as open and stopping retries...');
-            this.composerIsOpen = true; // Mark Composer as successfully open
-            this.hasInjectedBefore = true; // Mark that we've successfully injected at least once
-            return true; // SUCCESS: Stop retrying this command
-            
+            this.composerIsOpen = true;
+            this.hasInjectedBefore = true; // Mark as not first command anymore
+            return true;
           } else {
             console.log(`❌ No file changes detected after 60 seconds using strategy: ${strategy}`);
-            console.log(`🔄 Will try different strategy on attempt ${attemptCount + 1}...`);
-            
-            // If direct injection failed, mark Composer as possibly closed
+            console.log(`🔄 Will try next fallback strategy on attempt ${attemptCount + 1}...`);
             if (strategy === 'DIRECT_INJECT') {
-              console.log('🚪 Marking Composer as possibly closed');
               this.composerIsOpen = false;
             }
-            
-            // For localhost mode: need to switch back to Cursor for retry
             if (isLocalhostMode) {
               console.log('🔄 Switching back to Cursor for retry...');
               await this.activateCursor();
               await this.sleep(300);
             }
-            
-            await this.sleep(1000); // Brief pause before retry
-            // Continue to next iteration with different strategy
+            await this.sleep(1000);
+            // Continue to next iteration
           }
-          
         } else {
           console.log(`❌ Text injection failed with strategy: ${strategy}`);
-          console.log('🔄 Will try different approach...');
+          console.log('🔄 Will try next fallback approach...');
           await this.sleep(2000);
           // Continue to next iteration
         }
-        
       } catch (error) {
         console.error(`❌ Error in smart injection attempt ${attemptCount} (${strategy}):`, error);
         await this.sleep(2000);
@@ -666,6 +676,8 @@ export class CursorAutomator {
    * Monitors actual file system changes and git status
    */
   private async waitForFileChanges(timeoutMs: number): Promise<boolean> {
+    // Capture invocation for cancellation
+    const invocationIdAtStart = this.currentInvocationId;
     const startTime = Date.now();
     const checkInterval = 2000; // Check every 2 seconds
     
@@ -693,6 +705,12 @@ export class CursorAutomator {
     
     while (Date.now() - startTime < timeoutMs) {
       await this.sleep(checkInterval);
+      
+      // Abort wait if new invocation has started
+      if (this.currentInvocationId !== invocationIdAtStart) {
+          console.log('⏹️ waitForFileChanges aborted due to new invocation');
+          return false;
+      }
       
       try {
         // PRIMARY: Check index.html modification time (most reliable)
@@ -1239,5 +1257,13 @@ export class CursorAutomator {
     } catch {
       return false;
     }
+  }
+
+  /**
+   * Abort any ongoing wait timer for previous command invocation
+   */
+  public abortInvocation(): void {
+    this.currentInvocationId++;
+    console.log(`⏹️ Invocation aborted, new id: ${this.currentInvocationId}`);
   }
 }
