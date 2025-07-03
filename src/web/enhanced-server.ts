@@ -687,14 +687,83 @@ function getChatGPTStyleWidget(): string {
       }, 800);
     }
     
+    // Realtime WebRTC helpers
+    var realtimePc = null;
+    var localStream = null;
+    var audioSink = null;
+
     async function startRealtimeFlow() {
       try {
         const res = await fetch('/realtime-session');
-        const data = await res.json();
-        console.log('🎤 Realtime session info:', data);
-        // TODO: establish RTCPeerConnection here in a follow-up step.
+        const session = await res.json();
+        console.log('🎤 Realtime session:', session);
+
+        // 1. Prepare PeerConnection
+        realtimePc = new RTCPeerConnection({ iceServers: session.ice_servers || [] });
+
+        // 2. Capture microphone audio
+        localStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        localStream.getAudioTracks().forEach(t => realtimePc.addTrack(t, localStream));
+
+        // 3. Play assistant audio when received
+        realtimePc.ontrack = function(ev) {
+          if (!audioSink) {
+            audioSink = new Audio();
+            audioSink.autoplay = true;
+          }
+          audioSink.srcObject = ev.streams[0];
+        };
+
+        // 4. Optional data channel for future events
+        realtimePc.createDataChannel('oai-events');
+
+        // 5. ICE candidate logging (optional)
+        realtimePc.onicecandidate = (e) => {
+          if (e.candidate) console.log('ICE cand:', e.candidate.candidate);
+        };
+
+        // 6. Create SDP offer
+        const offer = await realtimePc.createOffer();
+        await realtimePc.setLocalDescription(offer);
+
+        // 7. Send offer to OpenAI Realtime to obtain answer
+        const answerResp = await fetch('https://api.openai.com/v1/realtime/sessions/' + session.id + '/offer', {
+          method: 'POST',
+          headers: {
+            'Authorization': 'Bearer ' + session.client_secret.value,
+            'Content-Type': 'application/sdp'
+          },
+          body: offer.sdp
+        });
+
+        if (!answerResp.ok) {
+          throw new Error('Failed to exchange SDP: ' + answerResp.status);
+        }
+
+        const answerSdp = await answerResp.text();
+        await realtimePc.setRemoteDescription({ type: 'answer', sdp: answerSdp });
+
+        updateStatus('Realtime connected', '🔊', '#10a37f');
+
       } catch (e) {
-        console.error('❌ Failed to start realtime session', e);
+        console.error('❌ Realtime flow error', e);
+        updateStatus('Realtime error', '❌', '#ef4444');
+      }
+    }
+
+    function stopRealtimeFlow() {
+      if (realtimePc) {
+        realtimePc.close();
+        realtimePc = null;
+      }
+      if (localStream) {
+        localStream.getTracks().forEach(t => t.stop());
+        localStream = null;
+      }
+      if (audioSink) {
+        audioSink.pause();
+        audioSink.srcObject = null;
+        audioSink = null;
       }
     }
     
@@ -712,6 +781,7 @@ function getChatGPTStyleWidget(): string {
         summaryDiv.textContent = '';
       } else {
         recording = false;
+        stopRealtimeFlow();
         ws.send(JSON.stringify({action:'stop',sessionId:currentSessionId}));
         mainBar.style.transform = 'scale(1)';
       }
@@ -834,5 +904,3 @@ httpServer.listen(HTTP_PORT, () => {
   console.log('🎤 ChatGPT-style voice interface ready!');
   console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
 });
-
-export { httpServer, wss };
