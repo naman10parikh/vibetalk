@@ -381,9 +381,7 @@ const httpServer = http.createServer(async (req, res) => {
       // NOTE: Realtime API is still in beta – requires openai ^4.19.0
       const session = await (openaiClient as any).beta.realtime.sessions.create({
         model: 'gpt-4o-realtime-preview-2024-05-14',
-        voice: 'alloy',
-        ttl_seconds: 300,
-        permissions: ['audio:send', 'audio:receive', 'text']
+        voice: 'alloy'
       });
 
       res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-cache' });
@@ -744,6 +742,13 @@ function getChatGPTStyleWidget(): string {
         await realtimePc.setRemoteDescription({ type: 'answer', sdp: answerSdp });
 
         updateStatus('Realtime connected', '🔊', '#10a37f');
+
+        // Immediate acknowledgement speech (local browser TTS)
+        if (window.speechSynthesis) {
+          var ackUtter = new window.SpeechSynthesisUtterance('Got it, working on that.');
+          ackUtter.rate = 1.05;
+          window.speechSynthesis.speak(ackUtter);
+        }
 
       } catch (e) {
         console.error('❌ Realtime flow error', e);
