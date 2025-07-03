@@ -10,6 +10,7 @@ import { AudioRecorder } from '../audio/recorder';
 import { WhisperClient } from '../whisper/client';
 import { CursorAutomator } from '../cursor/automator';
 import { Config } from '../config/config';
+import OpenAI from 'openai';
 
 const execAsync = promisify(exec);
 
@@ -18,6 +19,8 @@ const config = new Config();
 const audioRecorder = new AudioRecorder();
 const whisperClient = config.isValid() ? new WhisperClient(config.openaiApiKey) : null;
 const cursorAutomator = new CursorAutomator();
+const openaiClient = config.isValid() ? new OpenAI({ apiKey: config.openaiApiKey }) : null;
+fs.mkdirSync(path.join(process.cwd(), 'temp'), { recursive: true });
 
 // Enhanced state management
 let currentConnections = new Set<any>();
@@ -309,10 +312,14 @@ async function handleVoiceCommand(action: 'start' | 'stop', sessionId: string): 
           sessionId
         });
         
-        // After code changes, send summary
+        // After code changes, create summary + voice
+        const summaryText = await generateFriendlySummary(transcript);
+        const audioFileName = await generateSpeechAudio(summaryText);
+        
         broadcastToClients({
           type: 'summary',
-          summary: `Code updated for: "${transcript}"`,
+          summary: summaryText,
+          audioUrl: audioFileName ? `/speech/${audioFileName}` : undefined,
           sessionId
         });
         
@@ -368,6 +375,20 @@ const httpServer = http.createServer((req, res) => {
       'Cache-Control': 'no-cache'
     });
     res.end(getChatGPTStyleWidget());
+  } else if (url.startsWith('/speech/')) {
+    const fileName = path.basename(url);
+    const audioPath = path.join(process.cwd(), 'temp', fileName);
+    try {
+      const audioContent = fs.readFileSync(audioPath);
+      res.writeHead(200, {
+        'Content-Type': 'audio/mpeg',
+        'Cache-Control': 'no-cache'
+      });
+      res.end(audioContent);
+    } catch {
+      res.writeHead(404, { 'Content-Type': 'text/plain' });
+      res.end('Audio not found');
+    }
   } else {
     res.writeHead(404, { 'Content-Type': 'text/plain' });
     res.end('Not found');
@@ -382,7 +403,7 @@ function getChatGPTStyleWidget(): string {
     var currentStep = '';
     var currentSessionId = null;
     var summaryDiv = document.createElement('div');
-    summaryDiv.style.cssText = 'margin-top:8px;color:#fbbf24;font-size:13px;text-align:center;min-height:18px;';
+    summaryDiv.style.cssText = 'display:none;';
     
     // Main container - ChatGPT style
     var container = document.createElement('div');
@@ -598,9 +619,10 @@ function getChatGPTStyleWidget(): string {
     }
     
     function handleSummary(message) {
-      summaryDiv.textContent = message.summary || '';
-      // Optionally play TTS
-      if (window.speechSynthesis && message.summary) {
+      if (message.audioUrl) {
+        var audio = new Audio(message.audioUrl);
+        audio.play();
+      } else if (window.speechSynthesis && message.summary) {
         var utter = new window.SpeechSynthesisUtterance(message.summary);
         utter.rate = 1.05;
         window.speechSynthesis.cancel();
@@ -711,6 +733,51 @@ wss.on('connection', ws => {
   });
 });
 
+// Helper: summarize diff + transcript into friendly summary
+async function generateFriendlySummary(transcript: string): Promise<string> {
+  if (!openaiClient) return `Code updated for: "${transcript}"`;
+  let diff = '';
+  try {
+    const { stdout } = await execAsync('git diff --unified=0');
+    diff = stdout.slice(0, 6000); // cap size to keep prompt small
+  } catch {}
+  try {
+    const completion = await openaiClient!.chat.completions.create({
+      model: 'gpt-4o-mini',
+      messages: [
+        { role: 'system', content: 'You are a helpful coding assistant. Summarize the code diff below in a short, cheerful tone. If no diff, still explain what you just did.' },
+        { role: 'user', content: `Here is the user request: ${transcript}\n\nHere is the git diff:\n${diff || '[no diff detected]'}` }
+      ]
+    });
+    const aiContent = completion.choices[0]?.message?.content;
+    return (aiContent ?? `Code updated for: "${transcript}"`).trim();
+  } catch (err) {
+    console.error('❌ Failed to generate diff summary:', err);
+    return `Code updated for: "${transcript}"`;
+  }
+}
+
+// Helper: convert text to speech using OpenAI TTS. Returns filename (within temp/) or null.
+async function generateSpeechAudio(text: string): Promise<string | null> {
+  if (!openaiClient) return null;
+  try {
+    const mp3 = await openaiClient!.audio.speech.create({
+      model: 'tts-1',
+      voice: 'alloy',
+      input: text,
+      speed: 1.1
+    });
+    const buffer = Buffer.from(await mp3.arrayBuffer());
+    const fileName = `speech_${Date.now()}.mp3`;
+    const filePath = path.join(process.cwd(), 'temp', fileName);
+    await fs.promises.writeFile(filePath, buffer);
+    return fileName;
+  } catch (err) {
+    console.error('❌ Failed to generate speech audio:', err);
+    return null;
+  }
+}
+
 // Launch servers
 httpServer.listen(HTTP_PORT, () => {
   console.log('🚀 Enhanced ChatGPT-Style VibeTalk Server Started');
@@ -729,4 +796,4 @@ httpServer.listen(HTTP_PORT, () => {
   console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
 });
 
-export { httpServer, wss }; 
+export { httpServer, wss };
