@@ -8,6 +8,7 @@ export class CursorAutomator {
   private composerIsOpen: boolean = false; // Track if Composer is likely open
   private currentInvocationId: number = 0; // Track current invocation for timeout cancellation
   private firstCommandAttempted: boolean = false;
+  private lastNonCursorWindow: {app: string, title: string} | null = null; // Track last non-Cursor window for quick return
   
   /**
    * Check if Cursor is currently running
@@ -287,9 +288,15 @@ export class CursorAutomator {
 
         // Standard focus return logic
         if (originalWindow && originalWindow.app !== 'Cursor') {
+          this.lastNonCursorWindow = originalWindow; // remember for future commands
           await this.sleep(800);
           console.log(`🔄 Returning focus to ${originalWindow.app}...`);
           await this.returnFocusToApp(originalWindow.app);
+          await this.sleep(300);
+        } else if (originalWindow?.app === 'Cursor' && this.lastNonCursorWindow) {
+          // We started inside Cursor, but user prefers to leave quickly
+          console.log(`🔄 Returning focus to last non-Cursor app (${this.lastNonCursorWindow.app})...`);
+          await this.returnFocusToApp(this.lastNonCursorWindow.app);
           await this.sleep(300);
         }
       }
@@ -522,6 +529,15 @@ export class CursorAutomator {
               await this.returnFocusToBrowserWithLocalhost(originalLocalhostUrl);
             } else {
               await this.returnFocusToApp(originalWindow.app);
+            }
+          }
+          if (!isLocalhostMode) {
+            if (originalWindow && originalWindow.app !== 'Cursor') {
+              console.log('⏎ Restoring focus to original application…');
+              await this.returnFocusToApp(originalWindow.app);
+            } else if (originalWindow?.app === 'Cursor' && this.lastNonCursorWindow) {
+              console.log('⏎ Restoring focus to last non-Cursor application…');
+              await this.returnFocusToApp(this.lastNonCursorWindow.app);
             }
           }
           // Wait for file changes (60 second timeout)
