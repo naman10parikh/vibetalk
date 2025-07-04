@@ -120,9 +120,7 @@ function broadcastToClients(message: any): void {
       }
     }
   }
-  
-  // Log detailed status for debugging
-  nativeLog(`📡 Broadcasting: ${message.type} - ${message.message || message.status}`);
+  // Debug logging to terminal disabled to reduce noise
 }
 
 // ===== Console.log Override =====
