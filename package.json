@@ -20,6 +20,7 @@
     "test-enhanced-experience": "npm run build && node dist/test-enhanced-experience.js",
     "test-e2e": "npm run build && node dist/test-e2e-experience.js",
     "test-auto-refresh": "node test-auto-refresh-e2e.js",
+    "test-vision": "ts-node scripts/test-vision.ts",
     "lint": "eslint src/**/*.ts",
     "format": "prettier --write src/**/*.ts"
   },
@@ -52,13 +53,16 @@
     "playwright": "^1.53.1",
     "prettier": "^3.0.0",
     "puppeteer": "^24.11.1",
+    "ts-node": "^10.9.2",
     "typescript": "^5.0.0"
   },
   "dependencies": {
     "@types/ws": "^8.18.1",
     "chokidar": "^4.0.3",
     "dotenv": "^16.0.0",
-    "openai": "^4.0.0",
+    "openai": "^4.104.0",
+    "screenshot-desktop": "^1.15.1",
+    "sharp": "^0.34.2",
     "ws": "^8.18.3"
   },
   "engines": {

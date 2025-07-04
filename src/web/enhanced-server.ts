@@ -4,13 +4,15 @@ import * as http from 'http';
 import * as fs from 'fs';
 import * as path from 'path';
 import { WebSocketServer } from 'ws';
-import { exec } from 'child_process';
+import { exec, execSync } from 'child_process';
 import { promisify } from 'util';
 import { AudioRecorder } from '../audio/recorder';
 import { WhisperClient } from '../whisper/client';
 import { CursorAutomator } from '../cursor/automator';
 import { Config } from '../config/config';
 import OpenAI from 'openai';
+import screenshot from 'screenshot-desktop';
+import os from 'os';
 
 const execAsync = promisify(exec);
 
@@ -36,13 +38,16 @@ let latestSessionId: string | null = null;
 let sessionBaseline: Record<string, string> = {};
 // Periodic summary interval handles
 const sessionIntervals: Record<string, NodeJS.Timeout> = {};
+// Track periodic screenshot polling per session to detect AI replies
+const conversationPollIntervals: Record<string, NodeJS.Timeout> = {};
+const lastAIOutputs: Record<string, string> = {};
 
 // Ports
 const HTTP_PORT = process.env.PORT ? parseInt(process.env.PORT) : 3000;
 const WS_PORT = process.env.WS_PORT ? parseInt(process.env.WS_PORT) : HTTP_PORT + 1;
 
-// Flush buffered status every 4 s to sound more natural
-const SUMMARY_FLUSH_MS = 4000;
+// Flush buffered status every 6 s to sound more natural
+const SUMMARY_FLUSH_MS = 6000;
 
 // Track last spoken summary per session to avoid repeats
 interface LastSummaryInfo { text: string; time: number; }
@@ -99,12 +104,20 @@ function broadcastToClients(message: any): void {
     } else {
       const sid = message.sessionId ?? sessionId;
       const st = (sessionState[sid] ||= { buffer: [] });
-      st.buffer.push(stripEmoji(message.message));
+      const cleanMsg = stripEmoji(message.message);
+      // Skip repetitive elapsed timers
+      if (/^⏳ Monitoring file changes/.test(cleanMsg)) {
+        return;
+      }
+      st.buffer.push(cleanMsg);
 
-      clearTimeout(st.timeout);
-      // Flush every ~2 s so updates sound timely and natural
-      const delay = SUMMARY_FLUSH_MS;
-      st.timeout = setTimeout(() => flushStatusSummary(sid), delay);
+      // If no pending flush timer, schedule one. This prevents perpetual delay under heavy logging.
+      if (!st.timeout) {
+        st.timeout = setTimeout(() => {
+          st.timeout = undefined;
+          flushStatusSummary(sid);
+        }, SUMMARY_FLUSH_MS);
+      }
     }
   }
   
@@ -291,6 +304,9 @@ async function handleVoiceCommand(action: 'start' | 'stop', sessionId: string): 
     }
   }
   if (action === 'start' && !isRecording) {
+    // Reset last captured AI output and stop any previous polling for this session
+    lastAIOutputs[sessionId] = '';
+    stopConversationPolling(sessionId);
     try {
       console.log(`🎤 Starting enhanced voice session: ${sessionId}`);
       isRecording = true;
@@ -410,9 +426,12 @@ async function handleVoiceCommand(action: 'start' | 'stop', sessionId: string): 
         transcript: transcript,
         sessionId
       });
-      
-      // (Disabled) Do not generate immediate assistant chit-chat; rely on log-driven summaries instead.
-      
+
+      // Start AI-output polling immediately after transcription
+      console.log('🚀 Starting AI-output polling');
+      broadcastToClients({ type: 'log', message: '🚀 Starting AI-output polling', sessionId });
+      startConversationPolling(sessionId);
+
       await sleep(600);
       
       // Step 4: Sending to Cursor
@@ -448,10 +467,29 @@ async function handleVoiceCommand(action: 'start' | 'stop', sessionId: string): 
           status: 'waiting',
           sessionId
         });
+
+        // Begin periodic polling for AI output in Cursor
+        startConversationPolling(sessionId);
+
+        // Bring Cursor to front briefly so Vision screenshots capture its UI
+        await cursorAutomator.activateCursor();
+
+        // Wait up to 8s for first AI reply before going back to browser
+        const firstAI = await waitForFirstAIOutput(sessionId, 8000);
+
+        // After waiting, return to browser (if we were originally in browser)
+        console.log(firstAI !== null ? '📋 First AI reply captured.' : '⌛ No AI reply yet (timeout).');
         
-        // After code changes, create summary + voice
+        // After code changes, flush any pending status and create final summary
+        await flushStatusSummary(sessionId);
+        // Create session-scoped diff summary and speak it
         const summaryText = await generateFriendlySummary(transcript);
         const audioFileName = await generateSpeechAudio(summaryText);
+        
+        // If audio generation failed, queue via fallback
+        if (!audioFileName) {
+          await queueStatusSpeech(summaryText, sessionId);
+        }
         
         broadcastToClients({
           type: 'summary',
@@ -466,6 +504,22 @@ async function handleVoiceCommand(action: 'start' | 'stop', sessionId: string): 
         if (sessionIntervals[sessionId]) {
           clearInterval(sessionIntervals[sessionId]);
           delete sessionIntervals[sessionId];
+        }
+        
+        const convoTurn = await captureConversationTurn();
+        if (convoTurn) {
+          console.log('📝 Conversation Turn extracted:', convoTurn);
+          broadcastToClients({
+            type: 'conversation-turn',
+            user_input: convoTurn.user_input,
+            ai_output: convoTurn.AI_output,
+            sessionId
+          });
+
+          // Push into session buffer so summaries include this conversational context
+          const st = (sessionState[sessionId] ||= { buffer: [] });
+          if (convoTurn.user_input) st.buffer.push(`User: ${convoTurn.user_input}`);
+          if (convoTurn.AI_output) st.buffer.push(`AI: ${convoTurn.AI_output}`);
         }
         
       } else {
@@ -492,6 +546,64 @@ async function handleVoiceCommand(action: 'start' | 'stop', sessionId: string): 
 
 function sleep(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+function startConversationPolling(sessionId: string) {
+  // Clear any existing poller for this session first
+  stopConversationPolling(sessionId);
+  conversationPollIntervals[sessionId] = setInterval(async () => {
+    const aiOut = await extractLatestAIOutput();
+    if (!aiOut) return;
+    if (lastAIOutputs[sessionId] === aiOut) return; // duplicate
+    lastAIOutputs[sessionId] = aiOut;
+
+    // Broadcast and log the new AI output
+    broadcastToClients({
+      type: 'ai-output',
+      message: aiOut,
+      sessionId
+    });
+
+    // Append to session buffer so summaries include it
+    const st = (sessionState[sessionId] ||= { buffer: [] });
+    st.buffer.push(`AI: ${aiOut}`);
+
+    // If we captured the first output, resolve awaiting promises
+    if (firstAICallbacks[sessionId]) {
+      firstAICallbacks[sessionId](aiOut);
+      delete firstAICallbacks[sessionId];
+    }
+  }, 2000); // every 2 seconds
+}
+
+function stopConversationPolling(sessionId: string) {
+  if (conversationPollIntervals[sessionId]) {
+    clearInterval(conversationPollIntervals[sessionId]);
+    delete conversationPollIntervals[sessionId];
+  }
+}
+
+// Resolve-once promise helpers so smartInject can await first AI reply
+const firstAICallbacks: Record<string, (msg: string)=>void> = {};
+function waitForFirstAIOutput(sessionId: string, timeoutMs = 8000): Promise<string|null> {
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => {
+      delete firstAICallbacks[sessionId];
+      resolve(null);
+    }, timeoutMs);
+    firstAICallbacks[sessionId] = (msg)=>{
+      clearTimeout(timer);
+      resolve(msg);
+    };
+  });
+}
+
+// Helper to just get AI_output as plain string, resilient to parsing issues
+async function extractLatestAIOutput(): Promise<string | null> {
+  const turn = await captureConversationTurn();
+  if (!turn) return null;
+  if (turn.AI_output) return turn.AI_output.trim();
+  return null;
 }
 
 // HTTP Server
@@ -1019,6 +1131,74 @@ async function generateSpeechAudio(text: string): Promise<string | null> {
     return fileName;
   } catch (err) {
     console.error('❌ Failed to generate speech audio:', err);
+    return null;
+  }
+}
+
+// Robust capture: try to grab the first Cursor window (even when not focused). Fallback to full-screen if anything fails.
+async function captureCursorWindowImage(): Promise<Buffer> {
+  // Try Python-based capture leveraging Quartz for Cursor IDE window
+  try {
+    const buf: Buffer = execSync(`python3 - << 'END_PY'
+import sys, os
+sys.path.insert(0, os.getcwd())
+from test import capture_cursor_window
+buf = capture_cursor_window()
+sys.stdout.buffer.write(buf)
+END_PY`, { encoding: 'buffer' });
+    return buf;
+  } catch (err) {
+    console.error('⚠️ Python-based capture failed, falling back to full-screen:', err);
+  }
+
+  // Fallback: full-screen capture (cross-platform)
+  try {
+    return await screenshot({ format: 'png' });
+  } catch (err) {
+    console.error('❌ Full-screen capture failed:', err);
+    throw err;
+  }
+}
+
+// Modify captureConversationTurn to use new capture
+async function captureConversationTurn(): Promise<{ user_input?: string; AI_output?: string } | null> {
+  if (!openaiClient) return null;
+  try {
+    const imgBuffer = await captureCursorWindowImage();
+    const base64Image = imgBuffer.toString('base64');
+
+    const completion = await openaiClient.responses.create({
+      model: 'gpt-4.1-mini',
+      input: [
+        {
+          role: 'user',
+          content: [
+            {
+              type: 'input_text',
+              text: 'This is a screenshot of a development IDE. Somewhere on the screen you will find ONLY the AI agent\'s latest reply text. Extract it and RETURN EXACTLY valid JSON in the form:\n{\n  "AI_output": "<ai reply text>"\n}\nIf no AI reply visible, set "AI_output" to an empty string. Do not include code fences or extra text.'
+            },
+            {
+              type: 'input_image',
+              image_url: `data:image/png;base64,${base64Image}`
+            }
+          ]
+        }
+      ]
+    } as any);
+
+    const content: string = (completion as any).output_text?.trim() || (completion as any).choices?.[0]?.message?.content?.trim() || '';
+    if (!content) return null;
+
+    try {
+      const parsed = JSON.parse(content);
+      return parsed;
+    } catch (err) {
+      console.error('❌ Failed to parse Vision JSON:', err, content);
+      // fallback: return all content as AI_output
+      return { AI_output: content };
+    }
+  } catch (err) {
+    console.error('❌ captureConversationTurn failed:', err);
     return null;
   }
 }
