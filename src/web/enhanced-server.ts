@@ -183,7 +183,6 @@ class EnhancedAutoRefresh {
   constructor() {
     this.updateMTime();
     setInterval(() => this.check(), 800); // Faster checking
-    console.log('🔍 Enhanced file watching active...');
   }
 
   addConnection(ws: any) {
@@ -207,8 +206,9 @@ class EnhancedAutoRefresh {
         const { stdout: changedStd } = await execAsync('git diff --name-only');
         const files = changedStd.split('\n').filter(Boolean);
         const elapsed1 = ((Date.now() - startTime) / 1000).toFixed(1);
-        console.log(`[+${elapsed1}s] 📂 Files changed: ${files.join(', ') || 'none'}`);
-        console.log(`[+${elapsed1}s] 📁 Change detected - starting enhanced rebuild...`);
+        broadcastToClients({ type: 'log', message: `[+${elapsed1}s] 📂 Files changed: ${files.join(', ') || 'none'}` });
+        broadcastToClients({ type: 'log', message: `[+${elapsed1}s] 📁 Change detected - starting enhanced rebuild...` });
+        console.log('File change detected');
         this.lastMTime = st;
         this.building = true;
         
@@ -277,9 +277,8 @@ class EnhancedAutoRefresh {
         });
         
         const elapsed2 = ((Date.now() - startTime) / 1000).toFixed(1);
-        console.log(`[+${elapsed2}s] ✅ Enhanced rebuild complete`);
+        broadcastToClients({ type: 'log', message: `[+${elapsed2}s] ✅ Enhanced rebuild complete` });
         this.building = false;
-        console.log('✅ Enhanced rebuild complete');
       }
     } catch (error) {
       console.error('❌ Enhanced auto-refresh error:', error);
@@ -308,6 +307,7 @@ async function handleVoiceCommand(action: 'start' | 'stop', sessionId: string): 
     lastAIOutputs[sessionId] = '';
     stopConversationPolling(sessionId);
     try {
+      broadcastToClients({ type: 'log', message: `🎤 Starting enhanced voice session: ${sessionId}` });
       console.log(`🎤 Starting enhanced voice session: ${sessionId}`);
       isRecording = true;
       
@@ -341,8 +341,6 @@ async function handleVoiceCommand(action: 'start' | 'stop', sessionId: string): 
         sessionId
       });
       
-      console.log('✅ Enhanced voice recording started');
-      
     } catch (error) {
       console.error('❌ Failed to start enhanced recording:', error);
       isRecording = false;
@@ -356,7 +354,7 @@ async function handleVoiceCommand(action: 'start' | 'stop', sessionId: string): 
     
   } else if (action === 'stop' && isRecording) {
     try {
-      console.log('⏹️ Stopping enhanced voice recording...');
+      broadcastToClients({ type: 'log', message: '⏹️ Stopping enhanced voice recording...' });
       
       // Step 1: Processing audio
       broadcastToClients({ 
@@ -419,6 +417,7 @@ async function handleVoiceCommand(action: 'start' | 'stop', sessionId: string): 
       
       // Step 3: Show transcription
       // Log transcription received
+      broadcastToClients({ type: 'log', message: `Transcription received: "${transcript}"` });
       console.log(`Transcription received: "${transcript}"`);
       broadcastToClients({ 
         type: 'transcription', 
@@ -428,8 +427,8 @@ async function handleVoiceCommand(action: 'start' | 'stop', sessionId: string): 
       });
 
       // Start AI-output polling
-      console.log('AI-output polling started');
       broadcastToClients({ type: 'log', message: 'AI-output polling started', sessionId });
+      console.log('AI-output polling started');
       startConversationPolling(sessionId);
 
       await sleep(600);
@@ -478,7 +477,7 @@ async function handleVoiceCommand(action: 'start' | 'stop', sessionId: string): 
         const firstAI = await waitForFirstAIOutput(sessionId, 8000);
 
         // After waiting, return to browser (if we were originally in browser)
-        console.log(firstAI !== null ? '📋 First AI reply captured.' : '⌛ No AI reply yet (timeout).');
+        broadcastToClients({ type: 'log', message: firstAI !== null ? '📋 First AI reply captured.' : '⌛ No AI reply yet (timeout).' });
         
         // After code changes, flush any pending status and create final summary
         await flushStatusSummary(sessionId);
@@ -497,30 +496,7 @@ async function handleVoiceCommand(action: 'start' | 'stop', sessionId: string): 
           audioUrl: audioFileName ? `/speech/${audioFileName}` : undefined,
           sessionId
         });
-        
-        console.log('✅ Enhanced command sent to Cursor AI');
-        
-        // Clear periodic interval for this session when stop is called
-        if (sessionIntervals[sessionId]) {
-          clearInterval(sessionIntervals[sessionId]);
-          delete sessionIntervals[sessionId];
-        }
-        
-        const convoTurn = await captureConversationTurn();
-        if (convoTurn) {
-          console.log('📝 Conversation Turn extracted:', convoTurn);
-          broadcastToClients({
-            type: 'conversation-turn',
-            user_input: convoTurn.user_input,
-            ai_output: convoTurn.AI_output,
-            sessionId
-          });
-
-          // Push into session buffer so summaries include this conversational context
-          const st = (sessionState[sessionId] ||= { buffer: [] });
-          if (convoTurn.user_input) st.buffer.push(`User: ${convoTurn.user_input}`);
-          if (convoTurn.AI_output) st.buffer.push(`AI: ${convoTurn.AI_output}`);
-        }
+        console.log(`Summary: ${summaryText}`);
         
       } else {
         broadcastToClients({ 
@@ -556,8 +532,8 @@ function startConversationPolling(sessionId: string) {
     if (!aiOut) return;
     if (lastAIOutputs[sessionId] === aiOut) return; // duplicate
     lastAIOutputs[sessionId] = aiOut;
-    // Log only new AI outputs
     console.log(`AI-output: ${aiOut}`);
+    // Log only new AI outputs
     broadcastToClients({ type: 'ai-output', message: aiOut, sessionId });
   }, 2000); // every 2 seconds
 }
@@ -771,7 +747,7 @@ function getChatGPTStyleWidget(): string {
       ws = new WebSocket('ws://' + location.hostname + ':${WS_PORT}');
       
       ws.onopen = function() {
-        console.log('🔗 VibeTalk ChatGPT-style interface connected');
+        broadcastToClients({ type: 'log', message: '🔗 VibeTalk ChatGPT-style interface connected' });
         updateStatus('Ready for voice commands', '🎙️', '#10a37f');
       };
       
@@ -989,7 +965,7 @@ const autoRefresh = new EnhancedAutoRefresh();
 const wss = new WebSocketServer({ port: WS_PORT });
 
 wss.on('connection', ws => {
-  console.log('🔗 New enhanced WebSocket connection');
+  broadcastToClients({ type: 'log', message: '🔗 New enhanced WebSocket connection' });
   currentConnections.add(ws);
   autoRefresh.addConnection(ws);
   
@@ -1003,13 +979,13 @@ wss.on('connection', ws => {
     const { action, sessionId } = msgObj;
     if ((action === 'start' || action === 'stop') && sessionId) {
       latestSessionId = sessionId;
-      console.log(`🎤 Enhanced voice command: ${action} (${sessionId})`);
+      broadcastToClients({ type: 'log', message: `🎤 Enhanced voice command: ${action} (${sessionId})` });
       await handleVoiceCommand(action, sessionId);
     }
   });
   
   ws.on('close', () => {
-    console.log('🔌 Enhanced WebSocket connection closed');
+    broadcastToClients({ type: 'log', message: '🔌 Enhanced WebSocket connection closed' });
     currentConnections.delete(ws);
   });
   
@@ -1191,20 +1167,20 @@ async function captureConversationTurn(): Promise<{ user_input?: string; AI_outp
 
 // Launch servers
 httpServer.listen(HTTP_PORT, () => {
-  console.log('🚀 Enhanced ChatGPT-Style VibeTalk Server Started');
-  console.log(`📱 HTTP Server: http://localhost:${HTTP_PORT}`);
-  console.log(`🔌 WebSocket Server: ws://localhost:${WS_PORT}`);
-  console.log('');
+  broadcastToClients({ type: 'log', message: '🚀 Enhanced ChatGPT-Style VibeTalk Server Started' });
+  broadcastToClients({ type: 'log', message: `📱 HTTP Server: http://localhost:${HTTP_PORT}` });
+  broadcastToClients({ type: 'log', message: `🔌 WebSocket Server: ws://localhost:${WS_PORT}` });
+  broadcastToClients({ type: 'log', message: '' });
   
   if (!config.isValid()) {
-    console.log('⚠️  OpenAI API key not configured');
-    console.log('💡 Set your API key: export OPENAI_API_KEY="your-key-here"');
+    broadcastToClients({ type: 'log', message: '⚠️  OpenAI API key not configured' });
+    broadcastToClients({ type: 'log', message: '💡 Set your API key: export OPENAI_API_KEY="your-key-here"' });
   } else {
-    console.log('✅ OpenAI API key configured');
+    broadcastToClients({ type: 'log', message: '✅ OpenAI API key configured' });
   }
   
-  console.log('🎤 ChatGPT-style voice interface ready!');
-  console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+  broadcastToClients({ type: 'log', message: '🎤 ChatGPT-style voice interface ready!' });
+  broadcastToClients({ type: 'log', message: '━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━' });
 });
 
 export { httpServer, wss };
