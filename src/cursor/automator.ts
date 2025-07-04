@@ -681,7 +681,6 @@ export class CursorAutomator {
       
       // For now, we'll use a simplified approach and assume changes occurred
       // In a real implementation, you might monitor file timestamps or other indicators
-      console.log(`⏳ Still waiting for changes... ${Math.round((Date.now() - startTime) / 1000)}s elapsed`);
     }
     
     return false; // Timeout reached
@@ -761,9 +760,6 @@ export class CursorAutomator {
           console.log(`📂 File count changed: ${initialFileCount} → ${currentFileCount}`);
           return true;
         }
-        
-        const elapsed = Math.round((Date.now() - startTime) / 1000);
-        console.log(`⏳ Monitoring file changes... ${elapsed}s elapsed`);
         
       } catch (error) {
         // Fallback to simplified detection if git commands fail

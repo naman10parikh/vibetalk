@@ -62,3 +62,6 @@ MIT License - see [LICENSE](./LICENSE) for details.
 ---
 
 **Built with ❤️ for the Cursor community** 
+
+## Cursor Rules
+- All commits and pushes must be explicitly approved by the user before being executed. 

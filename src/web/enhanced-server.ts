@@ -418,18 +418,18 @@ async function handleVoiceCommand(action: 'start' | 'stop', sessionId: string): 
       await sleep(200);
       
       // Step 3: Show transcription
-      console.log(`📝 Enhanced transcript: "${transcript}"`);
+      // Log transcription received
+      console.log(`Transcription received: "${transcript}"`);
       broadcastToClients({ 
         type: 'transcription', 
-        step: 'transcribed',
-        message: `📝 Understood: "${transcript}"`,
-        transcript: transcript,
+        step: 'received',
+        message: transcript,
         sessionId
       });
 
-      // Start AI-output polling immediately after transcription
-      console.log('🚀 Starting AI-output polling');
-      broadcastToClients({ type: 'log', message: '🚀 Starting AI-output polling', sessionId });
+      // Start AI-output polling
+      console.log('AI-output polling started');
+      broadcastToClients({ type: 'log', message: 'AI-output polling started', sessionId });
       startConversationPolling(sessionId);
 
       await sleep(600);
@@ -556,23 +556,9 @@ function startConversationPolling(sessionId: string) {
     if (!aiOut) return;
     if (lastAIOutputs[sessionId] === aiOut) return; // duplicate
     lastAIOutputs[sessionId] = aiOut;
-
-    // Broadcast and log the new AI output
-    broadcastToClients({
-      type: 'ai-output',
-      message: aiOut,
-      sessionId
-    });
-
-    // Append to session buffer so summaries include it
-    const st = (sessionState[sessionId] ||= { buffer: [] });
-    st.buffer.push(`AI: ${aiOut}`);
-
-    // If we captured the first output, resolve awaiting promises
-    if (firstAICallbacks[sessionId]) {
-      firstAICallbacks[sessionId](aiOut);
-      delete firstAICallbacks[sessionId];
-    }
+    // Log only new AI outputs
+    console.log(`AI-output: ${aiOut}`);
+    broadcastToClients({ type: 'ai-output', message: aiOut, sessionId });
   }, 2000); // every 2 seconds
 }
 
