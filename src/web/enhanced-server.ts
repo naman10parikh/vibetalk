@@ -56,7 +56,7 @@ const lastSummary: Record<string, LastSummaryInfo> = {};
 // ────────────────────────────────────────────────────────────────────────────────
 // Session-level status buffering so we can create short, spoken summaries instead
 // of dumping every low-level log line on the user.
-interface SessionState { buffer: string[]; timeout?: NodeJS.Timeout; }
+interface SessionState { buffer: string[]; timeout?: NodeJS.Timeout; lastRaw?: string; }
 const sessionState: Record<string, SessionState> = {};
 
 // Helper: generate TTS for status updates and broadcast to clients
@@ -115,7 +115,10 @@ function broadcastToClients(message: any): void {
       if (/^⏳ Monitoring file changes/.test(cleanMsg)) {
         return;
       }
-      st.buffer.push(cleanMsg);
+      // Only push if different from the previous entry to reduce noise
+      if (st.buffer[st.buffer.length - 1] !== cleanMsg) {
+        st.buffer.push(cleanMsg);
+      }
 
       // If no pending flush timer, schedule one. This prevents perpetual delay under heavy logging.
       if (!st.timeout) {
@@ -143,7 +146,18 @@ console.log = (...args: any[]) => {
 async function flushStatusSummary(sid: string) {
   const st = sessionState[sid];
   if (!st || st.buffer.length === 0) return;
-  const raw = st.buffer.join(' · ');
+  const raw = st.buffer.join(' · ').trim();
+
+  // 🛑 Avoid generating duplicate spoken updates when log content hasn't changed
+  if (raw === st.lastRaw) {
+    // Clear buffer to avoid infinite growth but skip speaking identical summary
+    st.buffer.length = 0;
+    return;
+  }
+
+  // Track last raw snapshot so we can compare on next flush
+  st.lastRaw = raw;
+  // Clear buffer now that we've captured a snapshot
   st.buffer.length = 0;
 
   let spoken = raw;
