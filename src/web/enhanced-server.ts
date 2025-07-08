@@ -632,6 +632,8 @@ function getChatGPTStyleWidget(): string {
       console.log('[VibeTalk-Audio]', msg);
     }
 
+    var pendingRefresh = false; // set when server asks page to refresh
+
     // Audio queue helpers ---------------------------------------------------
     function enqueueAudio(url) {
       if (!url) return;
@@ -642,6 +644,13 @@ function getChatGPTStyleWidget(): string {
       }
       audioQueue.push(url);
       playNextAudio();
+    }
+
+    function maybeReload() {
+      if (pendingRefresh && !isPlayingAudio && audioQueue.length === 0 && !document.hidden) {
+        logAudio('Queue empty – performing full reload');
+        location.reload();
+      }
     }
 
     function playNextAudio() {
@@ -676,12 +685,14 @@ function getChatGPTStyleWidget(): string {
         logAudio('Ended ' + url);
         isPlayingAudio = false;
         playNextAudio();
+        maybeReload();
       };
 
       audio.onerror = function(err) {
         console.error('[VibeTalk-Audio] error:', err);
         isPlayingAudio = false;
         playNextAudio();
+        maybeReload();
       };
     }
 
@@ -834,6 +845,7 @@ function getChatGPTStyleWidget(): string {
           handleError(message);
           break;
         case 'summary':
+          pendingRefresh = true; // once summary spoken we can refresh
           handleSummary(message);
           break;
         case 'status-audio':
@@ -845,6 +857,7 @@ function getChatGPTStyleWidget(): string {
           handleAssistant(message);
           break;
         case 'refresh-now':
+          pendingRefresh = true;
           showRefreshAnimation();
           break;
       }
@@ -961,29 +974,12 @@ function getChatGPTStyleWidget(): string {
     }
     
     function showRefreshAnimation() {
-      updateStatus('Refreshing with changes...', '✨', '#10b981');
+      updateStatus('Preparing page refresh...', '✨', '#10b981');
       actionBtn.innerHTML = '✨';
       progressBar.style.width = '100%';
 
-      // Dynamically re-fetch and replace page content, preserving the widget
-      fetch(window.location.href)
-        .then(r => r.text())
-        .then(html => {
-          const doc = new DOMParser().parseFromString(html, 'text/html');
-          const newContent = doc.getElementById('main-content');
-          const curr = document.getElementById('main-content');
-          if (newContent && curr) {
-            curr.replaceWith(newContent);
-            logAudio('Page content refreshed via AJAX');
-          } else {
-            logAudio('AJAX refresh failed, falling back to full reload');
-            location.reload();
-          }
-        })
-        .catch(err => {
-          console.error('[VibeTalk] AJAX refresh error:', err);
-          location.reload();
-        });
+      // We don't actually reload here; we set pendingRefresh and let maybeReload() handle it
+      maybeReload();
     }
     
     // Click handler for the entire bar
