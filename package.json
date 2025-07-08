@@ -9,6 +9,7 @@
     "start": "npm run build && node dist/index.js",
     "web": "npm run build && node dist/web/server.js",
     "web-enhanced": "npm run build && node dist/web/enhanced-server.js",
+    "enhanced-server": "npm run build && node dist/web/enhanced-server.js",
     "web-working": "npm run build && node dist/web/working-server.js",
     "test-web": "npm run build && node dist/web/test-server.js",
     "test": "npm run build && node dist/test.js",

@@ -480,11 +480,13 @@ export class CursorAutomator {
           await this.ensureCursorFocus();
           await this.sendCmdN();
           await this.sleep(400);
-        // 2. For all subsequent commands, always start with direct injection (first attempt)
+        // 2. For all subsequent commands, always start with Cmd+I to ensure Composer is open
         } else if (!isFirstCommand && attemptCount === 1) {
-          strategy = 'DIRECT_INJECT';
-          console.log('🎯 Subsequent command: Direct Injection');
-          // No keyboard shortcuts, just inject
+          strategy = 'SUBSEQUENT_CMDI';
+          console.log('🎯 Subsequent command: Cmd+I to ensure Composer is open');
+          await this.ensureCursorFocus();
+          await this.sendCmdI();
+          await this.sleep(400);
         // 3. If direct injection fails, fallback to Cmd+I + Direct Injection
         } else if (attemptCount === 2) {
           strategy = 'CMDI_DIRECT';
@@ -551,7 +553,7 @@ export class CursorAutomator {
           } else {
             console.log(`❌ No file changes detected after 60 seconds using strategy: ${strategy}`);
             console.log(`🔄 Will try next fallback strategy on attempt ${attemptCount + 1}...`);
-            if (strategy === 'DIRECT_INJECT') {
+            if (strategy === 'SUBSEQUENT_CMDI') {
               this.composerIsOpen = false;
             }
             if (isLocalhostMode) {

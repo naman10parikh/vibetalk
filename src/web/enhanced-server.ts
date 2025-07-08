@@ -105,10 +105,25 @@ function broadcastToClients(message: any): void {
       const sid = message.sessionId ?? sessionId;
       const st = (sessionState[sid] ||= { buffer: [] });
       const cleanMsg = stripEmoji(message.message);
-      // Skip repetitive elapsed timers
-      if (/^⏳ Monitoring file changes/.test(cleanMsg)) {
-        return;
+      
+      // Skip technical logs that shouldn't be spoken
+      const skipPatterns = [
+        /^⏳ Monitoring file changes/,
+        /^Transcription received:/,
+        /^AI-output polling/,
+        /^📋 First AI reply/,
+        /^⌛ No AI reply yet/,
+        /^AI-output:/,
+        /^File change detected/,
+        /^Summary:/
+      ];
+      
+      for (const pattern of skipPatterns) {
+        if (pattern.test(cleanMsg)) {
+          return;
+        }
       }
+      
       st.buffer.push(cleanMsg);
 
       // If no pending flush timer, schedule one. This prevents perpetual delay under heavy logging.
@@ -129,6 +144,22 @@ console.log = (...args: any[]) => {
   nativeLog(...args);
   try {
     const text = args.map(a => (typeof a === 'object' ? JSON.stringify(a) : String(a))).join(' ');
+    
+    // Skip broadcasting certain technical logs
+    const skipBroadcast = [
+      /^AI-output:/,
+      /^📋 First AI reply/,
+      /^⌛ No AI reply yet/,
+      /^Summary:/,
+      /^Transcription received:/
+    ];
+    
+    for (const pattern of skipBroadcast) {
+      if (pattern.test(text)) {
+        return; // Log to console but don't broadcast
+      }
+    }
+    
     broadcastToClients({ type: 'log', message: text });
   } catch {/* swallow */}
 };
@@ -414,8 +445,7 @@ async function handleVoiceCommand(action: 'start' | 'stop', sessionId: string): 
       await sleep(200);
       
       // Step 3: Show transcription
-      // Log transcription received
-      broadcastToClients({ type: 'log', message: `Transcription received: "${transcript}"` });
+      // Log transcription received (console only, no broadcast)
       console.log(`Transcription received: "${transcript}"`);
       broadcastToClients({ 
         type: 'transcription', 
@@ -424,50 +454,26 @@ async function handleVoiceCommand(action: 'start' | 'stop', sessionId: string): 
         sessionId
       });
 
-      // Start AI-output polling
-      broadcastToClients({ type: 'log', message: 'AI-output polling started', sessionId });
-      console.log('AI-output polling started');
-      startConversationPolling(sessionId);
-
-      await sleep(600);
+      // Step 3: Generate and speak immediate response
+      const immediateResponse = await generateImmediateResponse(transcript);
+      const immediateAudioFile = await generateSpeechAudio(immediateResponse);
       
-      // Step 4: Sending to Cursor
-      broadcastToClients({ 
-        type: 'voice-status', 
-        step: 'cursor-sending',
-        message: '🎯 Sending command to Cursor AI',
-        status: 'cursor-processing',
+      broadcastToClients({
+        type: 'assistant',
+        text: immediateResponse,
+        audioUrl: immediateAudioFile ? `/speech/${immediateAudioFile}` : undefined,
         sessionId
       });
+      
+      // Start AI output polling (silent)
+      startConversationPolling(sessionId);
+
+      // Brief pause before injection
+      await sleep(800);
       
       const success = await cursorAutomator.injectText(transcript, true);
       
       if (success) {
-        await sleep(300);
-        
-        // Step 5: AI Processing
-        broadcastToClients({ 
-          type: 'voice-status', 
-          step: 'ai-processing',
-          message: '🤖 Cursor AI is analyzing and executing your request',
-          status: 'ai-working',
-          sessionId
-        });
-        
-        await sleep(800);
-        
-        // Step 6: Waiting for changes
-        broadcastToClients({ 
-          type: 'voice-status', 
-          step: 'waiting-changes',
-          message: '⏳ Waiting for code changes to be applied',
-          status: 'waiting',
-          sessionId
-        });
-
-        // Begin periodic polling for AI output in Cursor
-        startConversationPolling(sessionId);
-
         // Bring Cursor to front briefly so Vision screenshots capture its UI
         await cursorAutomator.activateCursor();
 
@@ -475,26 +481,34 @@ async function handleVoiceCommand(action: 'start' | 'stop', sessionId: string): 
         const firstAI = await waitForFirstAIOutput(sessionId, 8000);
 
         // After waiting, return to browser (if we were originally in browser)
-        broadcastToClients({ type: 'log', message: firstAI !== null ? '📋 First AI reply captured.' : '⌛ No AI reply yet (timeout).' });
+        if (firstAI) {
+          console.log('📋 First AI reply captured.');
+        } else {
+          console.log('⌛ No AI reply yet (timeout).');
+        }
+        
+        // Wait a bit longer for file changes to be written
+        await sleep(2000);
+        
+        // Stop the conversation polling before generating summary
+        stopConversationPolling(sessionId);
         
         // After code changes, flush any pending status and create final summary
         await flushStatusSummary(sessionId);
+        
         // Create session-scoped diff summary and speak it
         const summaryText = await generateFriendlySummary(transcript);
-        const audioFileName = await generateSpeechAudio(summaryText);
-        
-        // If audio generation failed, queue via fallback
-        if (!audioFileName) {
-          await queueStatusSpeech(summaryText, sessionId);
+        if (summaryText && summaryText.trim()) {
+          const audioFileName = await generateSpeechAudio(summaryText);
+          
+          broadcastToClients({
+            type: 'summary',
+            summary: summaryText,
+            audioUrl: audioFileName ? `/speech/${audioFileName}` : undefined,
+            sessionId
+          });
+          console.log(`Summary: ${summaryText}`);
         }
-        
-        broadcastToClients({
-          type: 'summary',
-          summary: summaryText,
-          audioUrl: audioFileName ? `/speech/${audioFileName}` : undefined,
-          sessionId
-        });
-        console.log(`Summary: ${summaryText}`);
         
       } else {
         broadcastToClients({ 
@@ -525,22 +539,211 @@ function sleep(ms: number): Promise<void> {
 function startConversationPolling(sessionId: string) {
   // Clear any existing poller for this session first
   stopConversationPolling(sessionId);
+  
+  // Initialize buffer for this session
+  aiOutputBuffer[sessionId] = { content: '', lastUpdate: 0 };
+  
+  // Track meaningful AI outputs to avoid repetitive speech
+  let lastMeaningfulOutput = '';
+  let outputChangeCount = 0;
+  let lastOutputLength = 0;
+  let lastOutputHash = ''; // Add hash tracking to prevent duplicates
+  
   conversationPollIntervals[sessionId] = setInterval(async () => {
     const aiOut = await extractLatestAIOutput();
-    if (!aiOut) return;
-    if (lastAIOutputs[sessionId] === aiOut) return; // duplicate
+    if (!aiOut) {
+      // Check if we have buffered content that's ready to speak
+      const buffer = aiOutputBuffer[sessionId];
+      if (buffer.content && Date.now() - buffer.lastUpdate > AI_OUTPUT_BUFFER_TIMEOUT) {
+        // Process the buffered content
+        await processAIOutput(buffer.content, sessionId, lastMeaningfulOutput);
+        lastMeaningfulOutput = buffer.content;
+        buffer.content = '';
+      }
+      return;
+    }
+    
+    // Create a simple hash of the output to detect exact duplicates
+    const currentHash = aiOut.substring(0, 100) + aiOut.length;
+    
+    // Skip if exactly the same as last time (by hash)
+    if (lastOutputHash === currentHash) return;
+    lastOutputHash = currentHash;
+    
+    // Skip if exactly the same as last stored output for this session
+    if (lastAIOutputs[sessionId] === aiOut) return;
+    
+    // Log the raw output for debugging (but don't speak it)
+    console.log(`🤖 AI-output detected (${aiOut.length} chars)`);
+    
+    // Update the buffer with new content
+    const buffer = aiOutputBuffer[sessionId];
+    if (aiOut.length > buffer.content.length) {
+      buffer.content = aiOut;
+      buffer.lastUpdate = Date.now();
+    }
+    
+    // Always update the last output for comparison
     lastAIOutputs[sessionId] = aiOut;
-    console.log(`AI-output: ${aiOut}`);
-    // Log only new AI outputs
-    broadcastToClients({ type: 'ai-output', message: aiOut, sessionId });
-  }, 2000); // every 2 seconds
+    
+    // Trigger first AI callback if waiting
+    if (firstAICallbacks[sessionId]) {
+      firstAICallbacks[sessionId](aiOut);
+      delete firstAICallbacks[sessionId];
+    }
+  }, 2000); // Reduced from 6s to 2s since we're using buffering now
 }
+
+// New function to process accumulated AI output
+async function processAIOutput(aiOut: string, sessionId: string, lastMeaningfulOutput: string) {
+  // Check if this is a meaningful change worth speaking about
+  const isMeaningfulChange = isMeaningfulAIOutput(aiOut, lastMeaningfulOutput);
+  
+  if (isMeaningfulChange) {
+    console.log(`📢 Processing complete AI output (${aiOut.length} chars)`);
+    
+    // Only speak if we haven't spoken too recently (avoid spam)
+    const timeSinceLastSpeech = Date.now() - (lastSpeechTime[sessionId] || 0);
+    if (timeSinceLastSpeech > 10000) { // Increased from 8s to 10s
+      // Convert AI output to conversational update
+      const conversationalUpdate = await humanizeAIOutput(aiOut);
+      
+      console.log(`🎙️ Generating speech for: "${conversationalUpdate}"`);
+      
+      // Only speak if the update is actually meaningful and not repetitive
+      if (conversationalUpdate && conversationalUpdate.length > 10 && 
+          !conversationalUpdate.toLowerCase().includes('working on it')) {
+        const audioFile = await generateSpeechAudio(conversationalUpdate);
+        
+        console.log(`🔊 Generated audio file: ${audioFile ? audioFile : 'failed'}`);
+        
+        broadcastToClients({
+          type: 'assistant',
+          text: conversationalUpdate,
+          audioUrl: audioFile ? `/speech/${audioFile}` : undefined,
+          sessionId
+        });
+        
+        lastSpeechTime[sessionId] = Date.now();
+      }
+    } else {
+      console.log(`⏰ Speech throttled - last speech was ${(timeSinceLastSpeech/1000).toFixed(1)}s ago`);
+    }
+  }
+}
+
+// Helper to determine if AI output is worth speaking about
+function isMeaningfulAIOutput(currentOutput: string, lastMeaningfulOutput: string): boolean {
+  if (!currentOutput || currentOutput.trim().length < 10) return false;
+  
+  // Skip partial outputs - wait for complete sentences
+  const lastChar = currentOutput.trim().slice(-1);
+  const endsWithPunctuation = ['.', '!', '?', ':', ')'].includes(lastChar);
+  if (!endsWithPunctuation && currentOutput.length < 200) {
+    console.log('🔄 Skipping partial output, waiting for complete sentence...');
+    return false;
+  }
+  
+  // Skip if too similar to last meaningful output
+  if (lastMeaningfulOutput && currentOutput.includes(lastMeaningfulOutput.substring(0, 50))) {
+    return false;
+  }
+  
+  // Skip generic/repetitive phrases
+  const genericPhrases = [
+    'Plan, search, build anything',
+    'The account page now provides',
+    'seamlessly integrates with your homepage',
+    'luxury shopping experience',
+    'WeddingEase',
+    'Revamp account page UI',
+    'Enhanced Color Scheme',
+    'polished, luxury shopping',
+    'I can see your website currently has',
+    'What color would you like to change it to',
+    'Here are some popular options',
+    'Just let me know what you prefer',
+    'I\'ll help you change the background color',
+    'Voice Command: The user spoke this request'
+  ];
+  
+  for (const phrase of genericPhrases) {
+    if (currentOutput.includes(phrase)) {
+      return false;
+    }
+  }
+  
+  // Skip if it's about the wrong project (not VibeTalk)
+  const wrongProjectIndicators = [
+    'wedding', 'luxury', 'shopping', 'account page', 'wishlist',
+    'ecommerce', 'e-commerce', 'cart', 'checkout', 'product catalog'
+  ];
+  
+  const lowerOutput = currentOutput.toLowerCase();
+  for (const indicator of wrongProjectIndicators) {
+    if (lowerOutput.includes(indicator) && !lowerOutput.includes('vibetalk')) {
+      return false;
+    }
+  }
+  
+  // Skip if it's just asking questions back to the user
+  const questionPatterns = [
+    /what.*would you like/i,
+    /what.*do you prefer/i,
+    /which.*would you/i,
+    /do you want/i,
+    /would you like me to/i,
+    /let me know/i
+  ];
+  
+  for (const pattern of questionPatterns) {
+    if (pattern.test(currentOutput)) {
+      return false;
+    }
+  }
+  
+  // Skip if it's just a continuation of previous output (growing text)
+  if (lastMeaningfulOutput && currentOutput.startsWith(lastMeaningfulOutput.substring(0, 30))) {
+    return false;
+  }
+  
+  // Skip technical implementation details
+  if (currentOutput.includes('// Server side:') || 
+      currentOutput.includes('// Client side') ||
+      currentOutput.includes('wsServer.clients') ||
+      currentOutput.includes('socket.onmessage')) {
+    return false;
+  }
+  
+  // Look for actual meaningful updates about file changes or progress
+  const meaningfulIndicators = [
+    'successfully changed', 'updated', 'modified', 'created', 'added',
+    'fixed', 'removed', 'implemented', 'completed', 'finished',
+    'perfect!', 'done!', 'all set!'
+  ];
+  
+  const hasMeaningfulIndicator = meaningfulIndicators.some(indicator => 
+    lowerOutput.includes(indicator)
+  );
+  
+  // Only return true if it's a complete thought with meaningful content
+  return (hasMeaningfulIndicator || currentOutput.length > 150) && endsWithPunctuation;
+}
+
+// Track last speech time to avoid spam
+const lastSpeechTime: Record<string, number> = {};
+
+// Add buffer for accumulating AI outputs before speaking
+const aiOutputBuffer: Record<string, { content: string; lastUpdate: number }> = {};
+const AI_OUTPUT_BUFFER_TIMEOUT = 2000; // Wait 2 seconds for output to stabilize
 
 function stopConversationPolling(sessionId: string) {
   if (conversationPollIntervals[sessionId]) {
     clearInterval(conversationPollIntervals[sessionId]);
     delete conversationPollIntervals[sessionId];
   }
+  // Clean up buffer
+  delete aiOutputBuffer[sessionId];
 }
 
 // Resolve-once promise helpers so smartInject can await first AI reply
@@ -561,8 +764,15 @@ function waitForFirstAIOutput(sessionId: string, timeoutMs = 8000): Promise<stri
 // Helper to just get AI_output as plain string, resilient to parsing issues
 async function extractLatestAIOutput(): Promise<string | null> {
   const turn = await captureConversationTurn();
-  if (!turn) return null;
-  if (turn.AI_output) return turn.AI_output.trim();
+  if (!turn) {
+    console.log('🔍 captureConversationTurn returned null');
+    return null;
+  }
+  if (turn.AI_output) {
+    console.log('✅ AI_output found in turn:', turn.AI_output.trim());
+    return turn.AI_output.trim();
+  }
+  console.log('🔍 No AI_output found in turn:', turn);
   return null;
 }
 
@@ -618,28 +828,84 @@ function getChatGPTStyleWidget(): string {
     var currentStep = '';
     var currentSessionId = null;
 
-    // 🔊 Simple audio queue to avoid overlapping voices
+    // 🔊 Enhanced audio queue with better error handling and timeouts
     var audioQueue = [];
     var isPlayingAudio = false;
+    var audioTimeout = null;
+    
     function enqueueAudio(url) {
       if (!url) return;
       // Keep the queue short so updates don't get stale
-      if (audioQueue.length > 3) {
-        audioQueue.shift(); // drop the oldest pending audio
+      if (audioQueue.length > 2) {
+        console.log('Audio queue full, dropping oldest');
+        audioQueue.shift();
       }
       audioQueue.push(url);
       playNextAudio();
     }
+    
     function playNextAudio() {
       if (isPlayingAudio || audioQueue.length === 0) return;
+      
       var url = audioQueue.shift();
       var audio = new Audio(url);
       isPlayingAudio = true;
-      audio.onended = audio.onerror = function() {
+      
+      // Set a timeout to prevent stuck audio
+      audioTimeout = setTimeout(function() {
+        console.log('Audio playback timeout, moving to next');
+        isPlayingAudio = false;
+        audio.pause();
+        audio.src = '';
+        playNextAudio();
+      }, 10000); // 10 second timeout
+      
+      audio.onended = function() {
+        clearTimeout(audioTimeout);
         isPlayingAudio = false;
         playNextAudio();
       };
-      audio.play();
+      
+      audio.onerror = function(err) {
+        console.error('Audio playback error:', err);
+        clearTimeout(audioTimeout);
+        isPlayingAudio = false;
+        playNextAudio();
+      };
+      
+      // Add canplaythrough event to ensure audio is ready
+      audio.oncanplaythrough = function() {
+        audio.play().catch(function(err) {
+          console.error('Audio play failed:', err);
+          clearTimeout(audioTimeout);
+          isPlayingAudio = false;
+          playNextAudio();
+        });
+      };
+    }
+    
+    // Clear audio queue on new recording
+    function clearAudioQueue() {
+      audioQueue = [];
+      if (audioTimeout) {
+        clearTimeout(audioTimeout);
+        audioTimeout = null;
+      }
+    }
+
+    // Safe WebSocket send function
+    function wsSend(data) {
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify(data));
+        return true;
+      } else {
+        console.warn('WebSocket not ready, message queued:', data);
+        // Try to reconnect if not already reconnecting
+        if (!ws || ws.readyState === WebSocket.CLOSED) {
+          connectWebSocket();
+        }
+        return false;
+      }
     }
 
     // Main container - ChatGPT style
@@ -740,12 +1006,17 @@ function getChatGPTStyleWidget(): string {
     container.appendChild(summaryDiv);
     document.body.appendChild(container);
 
-    // WebSocket connection
+    // WebSocket connection with better reconnection
     function connectWebSocket() {
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        console.log('WebSocket already connected');
+        return;
+      }
+      
       ws = new WebSocket('ws://' + location.hostname + ':${WS_PORT}');
       
       ws.onopen = function() {
-        broadcastToClients({ type: 'log', message: '🔗 VibeTalk ChatGPT-style interface connected' });
+        console.log('WebSocket connected');
         updateStatus('Ready for voice commands', '🎙️', '#10a37f');
       };
       
@@ -754,6 +1025,7 @@ function getChatGPTStyleWidget(): string {
           var message = JSON.parse(event.data);
           handleMessage(message);
         } catch (e) {
+          console.error('Failed to parse message:', e);
           if (event.data.includes('refresh-now')) {
             showRefreshAnimation();
           }
@@ -761,11 +1033,14 @@ function getChatGPTStyleWidget(): string {
       };
       
       ws.onclose = function() {
+        console.log('WebSocket closed, reconnecting...');
         updateStatus('Reconnecting...', '🔄', '#f59e0b');
+        ws = null;
         setTimeout(connectWebSocket, 2000);
       };
       
       ws.onerror = function(error) {
+        console.error('WebSocket error:', error);
         updateStatus('Connection error', '❌', '#ef4444');
       };
     }
@@ -928,12 +1203,17 @@ function getChatGPTStyleWidget(): string {
       if (!recording) {
         recording = true;
         currentSessionId = 'session_' + Date.now();
-        ws.send(JSON.stringify({action:'start',sessionId:currentSessionId}));
-        mainBar.style.transform = 'scale(1.02)';
-        summaryDiv.textContent = '';
+        clearAudioQueue(); // Clear any pending audio
+        if (wsSend({action:'start',sessionId:currentSessionId})) {
+          mainBar.style.transform = 'scale(1.02)';
+          summaryDiv.textContent = '';
+        } else {
+          recording = false;
+          updateStatus('Connection lost - please wait', '⚠️', '#f59e0b');
+        }
       } else {
         recording = false;
-        ws.send(JSON.stringify({action:'stop',sessionId:currentSessionId}));
+        wsSend({action:'stop',sessionId:currentSessionId});
         mainBar.style.transform = 'scale(1)';
       }
     };
@@ -953,6 +1233,35 @@ function getChatGPTStyleWidget(): string {
     
     // Initialize
     connectWebSocket();
+    
+    // Handle page visibility changes
+    document.addEventListener('visibilitychange', function() {
+      if (document.hidden) {
+        console.log('Page hidden, maintaining connection');
+      } else {
+        console.log('Page visible, checking connection');
+        if (!ws || ws.readyState !== WebSocket.OPEN) {
+          connectWebSocket();
+        }
+      }
+    });
+    
+    // Clean up before page unload
+    window.addEventListener('beforeunload', function() {
+      if (recording && currentSessionId) {
+        // Try to send stop command before leaving
+        wsSend({action:'stop',sessionId:currentSessionId});
+      }
+      clearAudioQueue();
+      if (ws) {
+        ws.close();
+      }
+    });
+    
+    // Also handle page reload specifically
+    window.addEventListener('unload', function() {
+      clearAudioQueue();
+    });
   })();`;
 }
 
@@ -962,10 +1271,31 @@ const autoRefresh = new EnhancedAutoRefresh();
 // WebSocket server
 const wss = new WebSocketServer({ port: WS_PORT });
 
+// Add heartbeat to keep connections alive
+function heartbeat(this: any) {
+  this.isAlive = true;
+}
+
+// Ping clients every 30 seconds
+const wsHeartbeatInterval = setInterval(() => {
+  wss.clients.forEach((ws: any) => {
+    if (ws.isAlive === false) {
+      console.log('💔 Terminating dead WebSocket connection');
+      return ws.terminate();
+    }
+    ws.isAlive = false;
+    ws.ping();
+  });
+}, 30000);
+
 wss.on('connection', ws => {
   broadcastToClients({ type: 'log', message: '🔗 New enhanced WebSocket connection' });
   currentConnections.add(ws);
   autoRefresh.addConnection(ws);
+  
+  // Setup heartbeat
+  (ws as any).isAlive = true;
+  ws.on('pong', heartbeat);
   
   ws.on('message', async (data) => {
     let msgObj;
@@ -985,6 +1315,11 @@ wss.on('connection', ws => {
   ws.on('close', () => {
     broadcastToClients({ type: 'log', message: '🔌 Enhanced WebSocket connection closed' });
     currentConnections.delete(ws);
+    
+    // Clean up any active sessions for this connection
+    if (latestSessionId) {
+      cleanupSession(latestSessionId);
+    }
   });
   
   ws.on('error', (error) => {
@@ -993,66 +1328,101 @@ wss.on('connection', ws => {
   });
 });
 
+// Add cleanup function for sessions
+function cleanupSession(sessionId: string) {
+  console.log(`🧹 Cleaning up session: ${sessionId}`);
+  
+  // Stop conversation polling
+  stopConversationPolling(sessionId);
+  
+  // Clear periodic summary interval
+  if (sessionIntervals[sessionId]) {
+    clearInterval(sessionIntervals[sessionId]);
+    delete sessionIntervals[sessionId];
+  }
+  
+  // Clear session state
+  delete sessionState[sessionId];
+  delete lastAIOutputs[sessionId];
+  delete lastSummary[sessionId];
+  delete lastSpeechTime[sessionId];
+  delete sessionBaseline[sessionId];
+  delete aiOutputBuffer[sessionId];
+  
+  // Clear any pending callbacks
+  delete firstAICallbacks[sessionId];
+}
+
+// Clean up on server shutdown
+process.on('SIGINT', () => {
+  console.log('\n🛑 Shutting down VibeTalk server...');
+  clearInterval(wsHeartbeatInterval);
+  wss.clients.forEach((ws: any) => ws.close());
+  wss.close();
+  process.exit(0);
+});
+
 // Helper: summarize diff + transcript into friendly summary
 async function generateFriendlySummary(transcript: string): Promise<string> {
   // Determine baseline for this session
   const baseline = latestSessionId ? sessionBaseline[latestSessionId] || null : null;
-  // Fallback when no API key – keep it deterministic and grounded.
-  if (!openaiClient) {
-    try {
-      let diff = '';
-      let filesChanged: string[] = [];
-      if (baseline) {
-        let listStd = '';
-        let diffStd = '';
-        listStd = (await execAsync(`git diff --name-only ${baseline}`)).stdout;
-        diffStd = (await execAsync(`git diff --unified=0 ${baseline}`)).stdout;
-        filesChanged = listStd.split('\n').filter(Boolean).slice(0, 20);
-        diff = diffStd.slice(0, 6000);
-      } else {
-        const { stdout } = await execAsync('git diff --name-only');
-        filesChanged = stdout.split('\n').filter(Boolean);
-        if (filesChanged.length === 0) {
-          return `No file changes detected for request: "${transcript}"`;
-        }
-        return `Changed files: ${filesChanged.join(', ')} – request: "${transcript}"`;
-      }
-      return `Changed files: ${filesChanged.join(', ')} – request: "${transcript}"`;
-    } catch {
-      return `Code updated for: "${transcript}"`;
-    }
-  }
-
-  // When API key is present, craft a grounded, file-aware summary.
+  
+  // Always try to get the current diff first
   let diff = '';
   let filesChanged: string[] = [];
+  
   try {
-    // Capture changed file list (max 20 for brevity).
-    if (baseline) {
-      let listStd = '';
-      let diffStd = '';
-      listStd = (await execAsync(`git diff --name-only ${baseline}`)).stdout;
-      diffStd = (await execAsync(`git diff --unified=0 ${baseline}`)).stdout;
-      filesChanged = listStd.split('\n').filter(Boolean).slice(0, 20);
-      diff = diffStd.slice(0, 6000); // keep prompt small, ~6K chars
-    } else {
-      const { stdout: listStd } = await execAsync('git diff --name-only');
-      filesChanged = listStd.split('\n').filter(Boolean).slice(0, 20);
-      const { stdout: diffStd } = await execAsync('git diff --unified=0');
-      diff = diffStd.slice(0, 6000); // keep prompt small, ~6K chars
+    // Get list of changed files
+    const { stdout: statusOut } = await execAsync('git status --porcelain');
+    const modifiedFiles = statusOut.split('\n')
+      .filter(line => line.trim())
+      .map(line => line.substring(3).trim())
+      .filter(file => !file.includes('temp/') && !file.includes('.wav'));
+    
+    filesChanged = modifiedFiles;
+    
+    // Get the actual diff
+    if (filesChanged.length > 0) {
+      const { stdout: diffOut } = await execAsync('git diff --unified=2');
+      diff = diffOut.slice(0, 4000); // Limit diff size
+      console.log(`📝 Files changed: ${filesChanged.join(', ')}`);
     }
-  } catch {}
+  } catch (err) {
+    console.error('❌ Failed to get git diff:', err);
+  }
+  
+  // Fallback when no API key
+  if (!openaiClient) {
+    if (filesChanged.length === 0) {
+      return `Hmm, I didn't see any file changes. The command might still be processing.`;
+    }
+    return `Updated ${filesChanged.length} file(s): ${filesChanged.join(', ')}`;
+  }
 
-  // Build the prompt emphasising the checklist guidelines.
-  const systemPrompt = `You are a diligent release note generator.\n\n` +
-    `Rules you MUST follow:\n` +
-    `1. ONLY use the supplied git diff – do NOT invent details.\n` +
-    `2. Start with "+ Files changed:" then list unique file paths comma-separated.\n` +
-    `3. After that, give a one-sentence project-level summary (<20 words).\n` +
-    `4. Then, for EACH file, provide a bullet (max 1 sentence) describing the modification in plain language.\n` +
-    `5. If diff is empty, say "No file changes detected."`;
+  // When API key is present, craft a grounded, file-aware summary
+  const systemPrompt = `You are a friendly coding assistant who just completed a user's request. Create a natural, conversational summary that sounds like you're talking to a colleague. 
 
-  const userPrompt = `User voice request: "${transcript}"\n\nChanged files detected: ${filesChanged.join(', ') || '[none]'}\n\nGit diff:\n${diff || '[no diff detected]'}`;
+Rules:
+1. Start with an enthusiastic confirmation (e.g., "Done!", "Perfect!", "All set!")
+2. Briefly explain what you accomplished in simple terms (no technical jargon)
+3. Keep it conversational and upbeat (10-25 words total)
+4. If files were changed, mention the key change made
+5. Focus on the user's original request and what was actually done
+6. If no changes were detected, be honest but helpful
+
+Examples:
+- "Done! I updated the background to a beautiful gradient just like you asked."
+- "Perfect! Changed the background color of your website - looks great!"
+- "All set! Your website now has that warm sunset gradient background."`;
+
+  const userPrompt = `User's original request: "${transcript}"
+
+Files that were changed: ${filesChanged.join(', ') || '[no files changed yet]'}
+
+Key changes in the diff:
+${diff ? diff.substring(0, 1000) : '[no diff available]'}
+
+Based on the files changed and the diff, what did you actually accomplish?`;
 
   try {
     const completion = await openaiClient.chat.completions.create({
@@ -1061,16 +1431,115 @@ async function generateFriendlySummary(transcript: string): Promise<string> {
         { role: 'system', content: systemPrompt },
         { role: 'user', content: userPrompt }
       ],
-      max_tokens: 180
+      max_tokens: 100,
+      temperature: 0.7
     });
+    
     const aiContent = completion.choices[0]?.message?.content ?? '';
     return aiContent.trim();
   } catch (err) {
     console.error('❌ Failed to generate diff summary:', err);
     if (filesChanged.length === 0) {
-      return `No file changes detected for request: "${transcript}"`;
+      return `I processed your request but haven't seen file changes yet. They might still be saving.`;
     }
-    return `Changed files: ${filesChanged.join(', ')} – request: "${transcript}"`;
+    return `Done! Updated ${filesChanged.length} file(s) for your request.`;
+  }
+}
+
+// Helper: generate immediate human-like response to user's voice command
+async function generateImmediateResponse(transcript: string): Promise<string> {
+  if (!openaiClient) {
+    // Fallback responses if no OpenAI client
+    const fallbacks = [
+      "Got it! Working on that for you.",
+      "Sure thing! Let me handle that.",
+      "On it! I'll take care of that right away.",
+      "Perfect! I'll get that done for you.",
+      "Absolutely! Working on it now."
+    ];
+    return fallbacks[Math.floor(Math.random() * fallbacks.length)];
+  }
+
+  try {
+    const completion = await openaiClient.chat.completions.create({
+      model: 'gpt-4o-mini',
+      messages: [
+        { 
+          role: 'system', 
+          content: 'You are a helpful coding assistant. The user just gave you a voice command. Respond with a brief, enthusiastic acknowledgment (8-15 words) that shows you understood and are working on it. Be conversational and upbeat, like a friendly colleague who is about to help them with their coding task. Examples: "Got it! I\'ll update the background color right away." or "Perfect! Let me add that button for you." or "Sure thing! I\'ll make those styling changes." or "Absolutely! Working with Cursor to get that done."' 
+        },
+        { role: 'user', content: `Voice command: "${transcript}"` }
+      ],
+      max_tokens: 50
+    });
+    
+    const response = completion.choices[0]?.message?.content?.trim() || "Got it! Working on that for you.";
+    return response;
+  } catch (err) {
+    console.error('❌ Failed to generate immediate response:', err);
+    return "Got it! Working on that for you.";
+  }
+}
+
+// Helper: convert raw AI output to conversational updates
+async function humanizeAIOutput(aiOutput: string): Promise<string> {
+  // Quick check for specific success messages that should be spoken directly
+  const lowerOutput = aiOutput.toLowerCase();
+  if (lowerOutput.includes('perfect!') && lowerOutput.includes('successfully changed')) {
+    // Extract just the success message
+    const match = aiOutput.match(/Perfect!.*?(?:background|color|gradient).*?\./i);
+    if (match) return match[0];
+  }
+  
+  if (!openaiClient) {
+    // Simple fallback - extract key information
+    if (aiOutput.includes('successfully')) {
+      return "Great! I've successfully made those changes.";
+    }
+    if (aiOutput.includes('change') && aiOutput.includes('background')) {
+      return "Working on changing the background color now.";
+    }
+    return "";
+  }
+
+  try {
+    const completion = await openaiClient.chat.completions.create({
+      model: 'gpt-4o-mini',
+      messages: [
+        { 
+          role: 'system', 
+          content: `You are a friendly coding assistant giving progress updates. Convert the AI agent's output into a brief, natural spoken update (8-20 words).
+          
+Rules:
+1. Focus on what's actively being done or what was just completed
+2. Be conversational and friendly
+3. Skip technical details, focus on the outcome
+4. If the AI mentions successful changes, emphasize that
+5. Never mention file names or technical implementation
+6. Return empty string if the output is just asking questions or providing options
+
+Examples:
+- "I'm updating the background color to that warm sunset gradient now."
+- "Perfect! Just changed your website's background to those beautiful colors."
+- "Working on applying those background changes you requested."` 
+        },
+        { role: 'user', content: `AI output: "${aiOutput}"` }
+      ],
+      max_tokens: 60,
+      temperature: 0.7
+    });
+    
+    const response = completion.choices[0]?.message?.content?.trim() || "";
+    
+    // Don't return generic responses
+    if (response.toLowerCase().includes('working on it') || response.length < 5) {
+      return "";
+    }
+    
+    return response;
+  } catch (err) {
+    console.error('❌ Failed to humanize AI output:', err);
+    return "";
   }
 }
 
@@ -1099,6 +1568,7 @@ async function generateSpeechAudio(text: string): Promise<string | null> {
 async function captureCursorWindowImage(): Promise<Buffer> {
   // Try Python-based capture leveraging Quartz for Cursor IDE window
   try {
+    console.log('🖼️ Attempting Python-based Cursor window capture...');
     const buf: Buffer = execSync(`python3 - << 'END_PY'
 import sys, os
 sys.path.insert(0, os.getcwd())
@@ -1106,6 +1576,7 @@ from test import capture_cursor_window
 buf = capture_cursor_window()
 sys.stdout.buffer.write(buf)
 END_PY`, { encoding: 'buffer' });
+    console.log('✅ Python-based capture successful');
     return buf;
   } catch (err) {
     console.error('⚠️ Python-based capture failed, falling back to full-screen:', err);
@@ -1113,7 +1584,10 @@ END_PY`, { encoding: 'buffer' });
 
   // Fallback: full-screen capture (cross-platform)
   try {
-    return await screenshot({ format: 'png' });
+    console.log('🖼️ Attempting full-screen capture...');
+    const screenshotBuf = await screenshot({ format: 'png' });
+    console.log('✅ Full-screen capture successful');
+    return screenshotBuf;
   } catch (err) {
     console.error('❌ Full-screen capture failed:', err);
     throw err;
@@ -1127,30 +1601,37 @@ async function captureConversationTurn(): Promise<{ user_input?: string; AI_outp
     const imgBuffer = await captureCursorWindowImage();
     const base64Image = imgBuffer.toString('base64');
 
-    const completion = await openaiClient.responses.create({
-      model: 'gpt-4.1-mini',
-      input: [
+    const completion = await openaiClient.chat.completions.create({
+      model: 'gpt-4o-mini',
+      messages: [
         {
           role: 'user',
           content: [
             {
-              type: 'input_text',
+              type: 'text',
               text: 'This is a screenshot of a development IDE. Somewhere on the screen you will find ONLY the AI agent\'s latest reply text. Extract it and RETURN EXACTLY valid JSON in the form:\n{\n  "AI_output": "<ai reply text>"\n}\nIf no AI reply visible, set "AI_output" to an empty string. Do not include code fences or extra text.'
             },
             {
-              type: 'input_image',
-              image_url: `data:image/png;base64,${base64Image}`
+              type: 'image_url',
+              image_url: {
+                url: `data:image/png;base64,${base64Image}`
+              }
             }
           ]
         }
-      ]
-    } as any);
+      ],
+      max_tokens: 500
+    });
 
-    const content: string = (completion as any).output_text?.trim() || (completion as any).choices?.[0]?.message?.content?.trim() || '';
+    const content: string = completion.choices[0]?.message?.content?.trim() || '';
     if (!content) return null;
+
+    // Log the raw content for debugging
+    console.log('🔍 Raw Vision API response:', content);
 
     try {
       const parsed = JSON.parse(content);
+      console.log('✅ Parsed Vision JSON:', parsed);
       return parsed;
     } catch (err) {
       console.error('❌ Failed to parse Vision JSON:', err, content);

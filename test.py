@@ -48,25 +48,44 @@ def find_cursor_windows():
 
 # Function to capture Cursor IDE window
 def capture_cursor_window():
-    """Capture the main Cursor IDE window"""
+    """Capture the main Cursor IDE window, prioritizing VibeTalk project"""
     cursor_windows = find_cursor_windows()
     
     if not cursor_windows:
         raise RuntimeError("No Cursor IDE windows found. Please make sure Cursor is running.")
     
-    # Try to find the main window (usually the one with a file path or project name)
-    main_window = None
+    # Debug: Show all available Cursor windows
+    print("Available Cursor windows:")
+    for i, window in enumerate(cursor_windows):
+        print(f"  {i+1}. {window['owner']} - '{window['title']}'")
+    
+    # Priority 1: Find VibeTalk project window
+    vibetalk_window = None
     for window in cursor_windows:
-        # Skip windows with generic titles or no title
-        if window['title'] and window['title'] not in ['', 'Cursor']:
-            main_window = window
+        title = window['title'].lower()
+        if 'vibetalk' in title:
+            vibetalk_window = window
+            print(f"✅ Found VibeTalk project window: {window['title']}")
             break
     
-    # If no main window found, use the first available Cursor window
-    if not main_window:
-        main_window = cursor_windows[0]
+    if vibetalk_window:
+        main_window = vibetalk_window
+    else:
+        # Priority 2: Find the window with most recent activity or largest title
+        main_window = None
+        for window in cursor_windows:
+            # Skip windows with generic titles or no title
+            if window['title'] and window['title'] not in ['', 'Cursor']:
+                main_window = window
+                break
+        
+        # If no main window found, use the first available Cursor window
+        if not main_window:
+            main_window = cursor_windows[0]
+        
+        print(f"⚠️  No VibeTalk window found, using: {main_window['title']}")
     
-    print(f"Capturing window: {main_window['owner']} - {main_window['title']}")
+    print(f"📸 Capturing window: {main_window['owner']} - {main_window['title']}")
     
     # Capture the window
     img_ref = CG.CGWindowListCreateImage(
