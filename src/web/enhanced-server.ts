@@ -89,6 +89,12 @@ function broadcastToClients(message: any): void {
     sessionId: sessionId
   };
   
+  // ✨ DEBUG: Log assistant/summary payloads with audio info
+  if (['assistant', 'summary'].includes(enhancedMessage.type)) {
+    const hasAudio = enhancedMessage.audioUrl ? 'with-audio' : 'no-audio';
+    console.log(`📤 Broadcast ${enhancedMessage.type} (${hasAudio}):`, enhancedMessage.text || enhancedMessage.summary || '[no text]');
+  }
+  
   const messageStr = JSON.stringify(enhancedMessage);
   currentConnections.forEach(ws => {
     if (ws.readyState === ws.OPEN) {
@@ -533,7 +539,7 @@ function startConversationPolling(sessionId: string) {
     console.log(`AI-output: ${aiOut}`);
     // Log only new AI outputs
     broadcastToClients({ type: 'ai-output', message: aiOut, sessionId });
-  }, 2000); // every 2 seconds
+  }, 5000); // every 2 seconds
 }
 
 function stopConversationPolling(sessionId: string) {
@@ -621,25 +627,66 @@ function getChatGPTStyleWidget(): string {
     // 🔊 Simple audio queue to avoid overlapping voices
     var audioQueue = [];
     var isPlayingAudio = false;
+    // DEBUG helpers – log all audio events
+    function logAudio(msg) {
+      console.log('[VibeTalk-Audio]', msg);
+    }
+
+    // Audio queue helpers ---------------------------------------------------
     function enqueueAudio(url) {
       if (!url) return;
-      // Keep the queue short so updates don't get stale
-      if (audioQueue.length > 3) {
-        audioQueue.shift(); // drop the oldest pending audio
+      // Keep queue from growing indefinitely
+      if (audioQueue.length > 5) {
+        logAudio('Queue full – dropping oldest');
+        audioQueue.shift();
       }
       audioQueue.push(url);
       playNextAudio();
     }
+
     function playNextAudio() {
       if (isPlayingAudio || audioQueue.length === 0) return;
+      // If tab is hidden wait until visible
+      if (document.hidden) {
+        logAudio('Tab hidden – waiting for visibilitychange');
+        document.addEventListener('visibilitychange', playNextAudio, { once: true });
+        return;
+      }
       var url = audioQueue.shift();
       var audio = new Audio(url);
       isPlayingAudio = true;
-      audio.onended = audio.onerror = function() {
+
+      audio.oncanplaythrough = function() {
+        logAudio('Playing ' + url);
+        audio.play().catch(function(err) {
+          if (err && err.name === 'NotAllowedError') {
+            logAudio('Play blocked – will retry when visible');
+            audioQueue.unshift(url); // put back at front
+            isPlayingAudio = false;
+            document.addEventListener('visibilitychange', playNextAudio, { once: true });
+          } else {
+            console.error('[VibeTalk-Audio] play failed:', err);
+            isPlayingAudio = false;
+            playNextAudio();
+          }
+        });
+      };
+
+      audio.onended = function() {
+        logAudio('Ended ' + url);
         isPlayingAudio = false;
         playNextAudio();
       };
-      audio.play();
+
+      audio.onerror = function(err) {
+        console.error('[VibeTalk-Audio] error:', err);
+        isPlayingAudio = false;
+        playNextAudio();
+      };
+    }
+
+    function clearAudioQueue() {
+      audioQueue.length = 0;
     }
 
     // Main container - ChatGPT style
@@ -745,7 +792,7 @@ function getChatGPTStyleWidget(): string {
       ws = new WebSocket('ws://' + location.hostname + ':${WS_PORT}');
       
       ws.onopen = function() {
-        broadcastToClients({ type: 'log', message: '🔗 VibeTalk ChatGPT-style interface connected' });
+        console.log('[VibeTalk] WebSocket connected');
         updateStatus('Ready for voice commands', '🎙️', '#10a37f');
       };
       
@@ -762,7 +809,7 @@ function getChatGPTStyleWidget(): string {
       
       ws.onclose = function() {
         updateStatus('Reconnecting...', '🔄', '#f59e0b');
-        setTimeout(connectWebSocket, 2000);
+        setTimeout(connectWebSocket, 5000);
       };
       
       ws.onerror = function(error) {
@@ -917,10 +964,26 @@ function getChatGPTStyleWidget(): string {
       updateStatus('Refreshing with changes...', '✨', '#10b981');
       actionBtn.innerHTML = '✨';
       progressBar.style.width = '100%';
-      
-      setTimeout(() => {
-        location.reload();
-      }, 800);
+
+      // Dynamically re-fetch and replace page content, preserving the widget
+      fetch(window.location.href)
+        .then(r => r.text())
+        .then(html => {
+          const doc = new DOMParser().parseFromString(html, 'text/html');
+          const newContent = doc.getElementById('main-content');
+          const curr = document.getElementById('main-content');
+          if (newContent && curr) {
+            curr.replaceWith(newContent);
+            logAudio('Page content refreshed via AJAX');
+          } else {
+            logAudio('AJAX refresh failed, falling back to full reload');
+            location.reload();
+          }
+        })
+        .catch(err => {
+          console.error('[VibeTalk] AJAX refresh error:', err);
+          location.reload();
+        });
     }
     
     // Click handler for the entire bar
@@ -1044,13 +1107,7 @@ async function generateFriendlySummary(transcript: string): Promise<string> {
   } catch {}
 
   // Build the prompt emphasising the checklist guidelines.
-  const systemPrompt = `You are a diligent release note generator.\n\n` +
-    `Rules you MUST follow:\n` +
-    `1. ONLY use the supplied git diff – do NOT invent details.\n` +
-    `2. Start with "+ Files changed:" then list unique file paths comma-separated.\n` +
-    `3. After that, give a one-sentence project-level summary (<20 words).\n` +
-    `4. Then, for EACH file, provide a bullet (max 1 sentence) describing the modification in plain language.\n` +
-    `5. If diff is empty, say "No file changes detected."`;
+  const systemPrompt = `You are a concise, voice-friendly change summary generator. After any code or configuration update, briefly describe what the user requested and what the agent did, using plain, everyday language without jargon or filler. Keep it short so a text-to-speech system reads smoothly. If nothing changed, respond “No changes made.” Only describe the actual request and its outcome—do not invent or add extra details.`;
 
   const userPrompt = `User voice request: "${transcript}"\n\nChanged files detected: ${filesChanged.join(', ') || '[none]'}\n\nGit diff:\n${diff || '[no diff detected]'}`;
 
@@ -1076,7 +1133,10 @@ async function generateFriendlySummary(transcript: string): Promise<string> {
 
 // Helper: convert text to speech using OpenAI TTS. Returns filename (within temp/) or null.
 async function generateSpeechAudio(text: string): Promise<string | null> {
-  if (!openaiClient) return null;
+  if (!openaiClient) {
+    console.log('🔈 Skipping TTS (no OpenAI client) – text:', text);
+    return null;
+  }
   try {
     const mp3 = await openaiClient!.audio.speech.create({
       model: 'tts-1',
@@ -1088,9 +1148,12 @@ async function generateSpeechAudio(text: string): Promise<string | null> {
     const fileName = `speech_${Date.now()}.mp3`;
     const filePath = path.join(process.cwd(), 'temp', fileName);
     await fs.promises.writeFile(filePath, buffer);
+
+    // ✨ DEBUG: log file size
+    console.log(`🔊 Speech audio generated (${(buffer.length/1024).toFixed(1)} KB): ${fileName}`);
     return fileName;
   } catch (err) {
-    console.error('❌ Failed to generate speech audio:', err);
+    console.error('❌ Failed to generate speech audio:', err, '\nText:', text);
     return null;
   }
 }

@@ -13,10 +13,11 @@
         
         body {
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-            /* Updated to a sleek black background */
-            background: #000000 !important;
+            /* Updated to a solid red background as per request */
+            /* background: red !important; */
+            background: blue !important;
             min-height: 100vh;
-            color: #ffffff; /* Updated text color for better contrast */
+            color: #000000; /* Updated text color for better contrast */
             padding: 20px;
         }
         
@@ -264,109 +265,365 @@
         <span id="page-status">🎙️ VibeTalk Demo - Ready for Voice Commands</span>
     </div>
     
-    <div class="container">
-        <div class="header">
-            <div class="logo">🎵</div>
-            <h1>🎙️ VibeTalk Development Environment</h1>
-            <p class="subtitle">Live Voice-Controlled Website Development</p>
-            <p>This IS your localhost project - voice commands directly modify this page!</p>
-        </div>
-        
-        <div class="widget-status">
-            <h3><span class="emoji">🎯</span> Quick Start Guide</h3>
-            <p><strong>1.</strong> Look for the floating microphone in the bottom-right corner</p>
-            <p><strong>2.</strong> Click it or press <span class="hotkey">Ctrl/Cmd + Shift + V</span></p>
-            <p><strong>3.</strong> Speak your request clearly</p>
-            <p><strong>4.</strong> Watch the magic happen automatically!</p>
-        </div>
-        
-        <div class="instructions">
-            <h3><span class="emoji">⚡</span> Real Localhost Development Workflow</h3>
-            <ol>
-                <li><strong>Voice Input:</strong> Click the microphone or use Ctrl/Cmd+Shift+V</li>
-                <li><strong>AI Transcription:</strong> Speech → text via OpenAI Whisper</li>
-                <li><strong>Cursor Integration:</strong> Request sent to Cursor AI in background</li>
-                <li><strong>File Modification:</strong> Cursor edits the actual source files (src/web/index.html)</li>
-                <li><strong>Auto-Build:</strong> Changes automatically built and served to THIS localhost</li>
-                <li><strong>Live Refresh:</strong> THIS page refreshes with your changes!</li>
-            </ol>
-        </div>
-        
-        <div class="demo-grid">
-            <div class="feature-card">
-                <h3><span class="emoji">🎤</span> Smart Voice Processing</h3>
-                <p>VibeTalk understands natural speech patterns and adds context to help Cursor's AI understand your voice commands perfectly.</p>
+    <div id="main-content">
+        <style>
+            * {
+                margin: 0;
+                padding: 0;
+                box-sizing: border-box;
+            }
+            
+            body {
+                font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+                /* Updated to a solid white background as per request */
+                background: #ffffff !important;
+                min-height: 100vh;
+                color: #000000; /* Updated text color for better contrast */
+                padding: 20px;
+            }
+            
+            .container {
+                max-width: 1000px;
+                margin: 0 auto;
+                background: rgba(255, 255, 255, 0.1);
+                backdrop-filter: blur(10px);
+                border-radius: 20px;
+                padding: 40px;
+                border: 1px solid rgba(255, 255, 255, 0.2);
+            }
+            
+            .header {
+                text-align: center;
+                margin-bottom: 40px;
+            }
+            
+            .logo {
+                font-size: 4rem;
+                margin-bottom: 20px;
+                animation: pulse 2s infinite;
+            }
+            
+            @keyframes pulse {
+                0% { transform: scale(1); }
+                50% { transform: scale(1.05); }
+                100% { transform: scale(1); }
+            }
+            
+            h1 {
+                font-size: 2.5rem;
+                margin-bottom: 10px;
+                font-weight: 700;
+                color: #fbbf24;
+            }
+            
+            .subtitle {
+                font-size: 1.2rem;
+                opacity: 0.9;
+                margin-bottom: 30px;
+            }
+            
+            .demo-grid {
+                display: grid;
+                grid-template-columns: 1fr 1fr;
+                gap: 30px;
+                margin-bottom: 40px;
+            }
+            
+            @media (max-width: 768px) {
+                .demo-grid {
+                    grid-template-columns: 1fr;
+                }
+            }
+            
+            .demo-section {
+                background: rgba(255, 255, 255, 0.1);
+                border-radius: 15px;
+                padding: 30px;
+                margin: 20px 0;
+            }
+            
+            .demo-section h2 {
+                color: #22c55e;
+                margin-bottom: 20px;
+                display: flex;
+                align-items: center;
+                gap: 15px;
+            }
+            
+            .instructions {
+                background: rgba(59, 130, 246, 0.2);
+                border: 2px solid rgba(59, 130, 246, 0.5);
+                border-radius: 15px;
+                padding: 25px;
+                margin: 25px 0;
+            }
+            
+            .instructions h3 {
+                margin-bottom: 15px;
+                color: #fbbf24;
+            }
+            
+            .instructions ol {
+                margin-left: 20px;
+            }
+            
+            .instructions li {
+                margin: 10px 0;
+                line-height: 1.6;
+            }
+            
+            .widget-status {
+                background: rgba(34, 197, 94, 0.2);
+                border: 2px solid rgba(34, 197, 94, 0.5);
+                border-radius: 15px;
+                padding: 20px;
+                margin: 20px 0;
+                text-align: center;
+            }
+            
+            .widget-status h3 {
+                color: #22c55e;
+                margin-bottom: 15px;
+            }
+            
+            .hotkey {
+                background: rgba(255, 255, 255, 0.2);
+                padding: 5px 10px;
+                border-radius: 8px;
+                font-family: 'Monaco', 'Consolas', monospace;
+                font-weight: bold;
+                font-size: 0.9rem;
+            }
+            
+            .feature-card {
+                background: rgba(255, 255, 255, 0.1);
+                border-radius: 10px;
+                padding: 25px;
+                margin: 20px 0;
+                border-left: 4px solid #22c55e;
+            }
+            
+            .feature-card h3 {
+                color: #22c55e;
+                margin-bottom: 15px;
+                display: flex;
+                align-items: center;
+                gap: 10px;
+            }
+            
+            .test-commands {
+                background: rgba(251, 191, 36, 0.2);
+                border: 2px solid rgba(251, 191, 36, 0.5);
+                border-radius: 15px;
+                padding: 25px;
+                margin: 25px 0;
+            }
+            
+            .test-commands h3 {
+                color: #fbbf24;
+                margin-bottom: 15px;
+            }
+            
+            .test-commands ul {
+                margin-left: 20px;
+            }
+            
+            .test-commands li {
+                margin: 10px 0;
+                line-height: 1.6;
+                font-style: italic;
+                padding: 8px;
+                background: rgba(255, 255, 255, 0.1);
+                border-radius: 5px;
+            }
+            
+            .status-bar {
+                position: fixed;
+                top: 0;
+                left: 0;
+                right: 0;
+                background: rgba(0, 0, 0, 0.9);
+                padding: 15px;
+                text-align: center;
+                z-index: 9999;
+                border-bottom: 1px solid rgba(255, 255, 255, 0.2);
+            }
+            
+            .live-demo {
+                background: rgba(16, 185, 129, 0.2);
+                border: 2px solid rgba(16, 185, 129, 0.5);
+                border-radius: 15px;
+                padding: 30px;
+                margin: 30px 0;
+            }
+            
+            .live-demo h2 {
+                color: #10b981;
+                margin-bottom: 20px;
+                text-align: center;
+            }
+            
+            .demo-content {
+                display: grid;
+                grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+                gap: 20px;
+                margin-top: 20px;
+            }
+            
+            .demo-item {
+                background: rgba(255, 255, 255, 0.1);
+                padding: 20px;
+                border-radius: 10px;
+                text-align: center;
+            }
+            
+            button {
+                background: linear-gradient(135deg, #10b981, #059669);
+                color: white;
+                border: none;
+                padding: 15px 30px;
+                border-radius: 10px;
+                font-size: 16px;
+                cursor: pointer;
+                margin: 10px;
+                transition: all 0.3s ease;
+                font-weight: 600;
+            }
+            
+            button:hover {
+                transform: translateY(-2px);
+                box-shadow: 0 8px 20px rgba(16, 185, 129, 0.3);
+            }
+            
+            .success-message {
+                background: rgba(34, 197, 94, 0.2);
+                border: 2px solid rgba(34, 197, 94, 0.5);
+                border-radius: 10px;
+                padding: 15px;
+                margin: 15px 0;
+                text-align: center;
+                color: #22c55e;
+                font-weight: 600;
+            }
+            
+            .emoji {
+                font-size: 1.5rem;
+            }
+            
+            .code-example {
+                background: rgba(0, 0, 0, 0.3);
+                padding: 20px;
+                border-radius: 10px;
+                margin: 20px 0;
+                font-family: 'Monaco', 'Consolas', monospace;
+                border-left: 4px solid #fbbf24;
+                font-size: 0.9rem;
+            }
+        </style>
+        <div class="container">
+            <div class="header">
+                <div class="logo">🎵</div>
+                <h1>🎙️ VibeTalk Development Environment</h1>
+                <p class="subtitle">Live Voice-Controlled Website Development</p>
+                <p>This IS your localhost project - voice commands directly modify this page!</p>
             </div>
             
-            <div class="feature-card">
-                <h3><span class="emoji">🔄</span> Live Localhost Development</h3>
-                <p>Cursor edits actual source files, auto-builds, and refreshes THIS localhost. Real development, no demos!</p>
+            <div class="widget-status">
+                <h3><span class="emoji">🎯</span> Quick Start Guide</h3>
+                <p><strong>1.</strong> Look for the floating microphone in the bottom-right corner</p>
+                <p><strong>2.</strong> Click it or press <span class="hotkey">Ctrl/Cmd + Shift + V</span></p>
+                <p><strong>3.</strong> Speak your request clearly</p>
+                <p><strong>4.</strong> Watch the magic happen automatically!</p>
             </div>
             
-            <div class="feature-card">
-                <h3><span class="emoji">⚡</span> Instant File Updates</h3>
-                <p>Voice → Cursor edits src files → Auto-build → Localhost refresh. See changes immediately on your dev server!</p>
+            <div class="instructions">
+                <h3><span class="emoji">⚡</span> Real Localhost Development Workflow</h3>
+                <ol>
+                    <li><strong>Voice Input:</strong> Click the microphone or use Ctrl/Cmd+Shift+V</li>
+                    <li><strong>AI Transcription:</strong> Speech → text via OpenAI Whisper</li>
+                    <li><strong>Cursor Integration:</strong> Request sent to Cursor AI in background</li>
+                    <li><strong>File Modification:</strong> Cursor edits the actual source files (src/web/index.html)</li>
+                    <li><strong>Auto-Build:</strong> Changes automatically built and served to THIS localhost</li>
+                    <li><strong>Live Refresh:</strong> THIS page refreshes with your changes!</li>
+                </ol>
             </div>
             
-            <div class="feature-card">
-                <h3><span class="emoji">🎯</span> Zero Context Switching</h3>
-                <p>Stay on your localhost page. Cursor works invisibly in background while you remain in your development environment.</p>
-            </div>
-        </div>
-        
-        <div class="test-commands">
-            <h3><span class="emoji">🎤</span> Try These Voice Commands (Real Changes!):</h3>
-            <ul>
-                <li>"Change the main heading to say 'My Voice-Powered Development Environment'"</li>
-                <li>"Add a new button below the demo content that says 'Voice Generated Button'"</li>
-                <li>"Change the background gradient colors to use purple and blue"</li>
-                <li>"Add a new section about how voice coding works"</li>
-                <li>"Make the title bigger and change the color to yellow"</li>
-                <li>"Add a footer with my name and today's date"</li>
-                <li>"Create a simple form with name and email fields"</li>
-                <li>"Add a new paragraph explaining localhost development"</li>
-            </ul>
-            <p style="margin-top: 15px; opacity: 0.9; font-style: italic;">
-                ⚠️ These commands will actually modify src/web/index.html and refresh THIS localhost page!
-            </p>
-        </div>
-        
-        <div class="live-demo">
-            <h2><span class="emoji">🚀</span> Live Localhost Development</h2>
-            <p><strong>This IS your development environment!</strong> Voice commands will modify src/web/index.html and refresh this localhost page with real changes.</p>
-            
-            <div class="demo-content">
-                <div class="demo-item">
-                    <h3>🎨 Real File Editing</h3>
-                    <p>Voice commands edit src/web/index.html directly - just like manual coding!</p>
-                    <button onclick="changeColors()">Manual Change (Demo)</button>
+            <div class="demo-grid">
+                <div class="feature-card">
+                    <h3><span class="emoji">🎤</span> Smart Voice Processing</h3>
+                    <p>VibeTalk understands natural speech patterns and adds context to help Cursor's AI understand your voice commands perfectly.</p>
                 </div>
                 
-                <div class="demo-item">
-                    <h3>🔧 Live Development</h3>
-                    <p>See changes instantly on localhost:3000 - no deployment needed!</p>
-                    <button onclick="addElement()">Add Element (Demo)</button>
+                <div class="feature-card">
+                    <h3><span class="emoji">🔄</span> Live Localhost Development</h3>
+                    <p>Cursor edits actual source files, auto-builds, and refreshes THIS localhost. Real development, no demos!</p>
                 </div>
                 
-                <div class="demo-item">
-                    <h3>📝 Voice-Driven Development</h3>
-                    <p>Natural language → Real code changes → Instant localhost updates</p>
-                    <button onclick="showDemo()">Show Status</button>
+                <div class="feature-card">
+                    <h3><span class="emoji">⚡</span> Instant File Updates</h3>
+                    <p>Voice → Cursor edits src files → Auto-build → Localhost refresh. See changes immediately on your dev server!</p>
+                </div>
+                
+                <div class="feature-card">
+                    <h3><span class="emoji">🎯</span> Zero Context Switching</h3>
+                    <p>Stay on your localhost page. Cursor works invisibly in background while you remain in your development environment.</p>
                 </div>
             </div>
             
-            <div class="success-message" id="status-message" style="display: none;">
-                ✅ VibeTalk is working! This message was added via voice command.
+            <div class="test-commands">
+                <h3><span class="emoji">🎤</span> Try These Voice Commands (Real Changes!):</h3>
+                <ul>
+                    <li>"Change the main heading to say 'My Voice-Powered Development Environment'"</li>
+                    <li>"Add a new button below the demo content that says 'Voice Generated Button'"</li>
+                    <li>"Change the background gradient colors to use purple and blue"</li>
+                    <li>"Add a new section about how voice coding works"</li>
+                    <li>"Make the title bigger and change the color to yellow"</li>
+                    <li>"Add a footer with my name and today's date"</li>
+                    <li>"Create a simple form with name and email fields"</li>
+                    <li>"Add a new paragraph explaining localhost development"</li>
+                </ul>
+                <p style="margin-top: 15px; opacity: 0.9; font-style: italic;">
+                    ⚠️ These commands will actually modify src/web/index.html and refresh THIS localhost page!
+                </p>
             </div>
-        </div>
-        
-        <div class="demo-section">
-            <h2><span class="emoji">🛠️</span> Add to Your Project</h2>
-            <p>Embed VibeTalk on any localhost project with just one line:</p>
-            <div class="code-example">
+            
+            <div class="live-demo">
+                <h2><span class="emoji">🚀</span> Live Localhost Development</h2>
+                <p><strong>This IS your development environment!</strong> Voice commands will modify src/web/index.html and refresh this localhost page with real changes.</p>
+                
+                <div class="demo-content">
+                    <div class="demo-item">
+                        <h3>🎨 Real File Editing</h3>
+                        <p>Voice commands edit src/web/index.html directly - just like manual coding!</p>
+                        <button onclick="changeColors()">Manual Change (Demo)</button>
+                    </div>
+                    
+                    <div class="demo-item">
+                        <h3>🔧 Live Development</h3>
+                        <p>See changes instantly on localhost:3000 - no deployment needed!</p>
+                        <button onclick="addElement()">Add Element (Demo)</button>
+                    </div>
+                    
+                    <div class="demo-item">
+                        <h3>📝 Voice-Driven Development</h3>
+                        <p>Natural language → Real code changes → Instant localhost updates</p>
+                        <button onclick="showDemo()">Show Status</button>
+                    </div>
+                </div>
+                
+                <div class="success-message" id="status-message" style="display: none;">
+                    ✅ VibeTalk is working! This message was added via voice command.
+                </div>
+            </div>
+            
+            <div class="demo-section">
+                <h2><span class="emoji">🛠️</span> Add to Your Project</h2>
+                <p>Embed VibeTalk on any localhost project with just one line:</p>
+                <div class="code-example">
 &lt;script src="http://localhost:3000/widget.js"&gt;&lt;/script&gt;
+                </div>
+                <p>That's it! The floating microphone will appear on any page where you include this script.</p>
             </div>
-            <p>That's it! The floating microphone will appear on any page where you include this script.</p>
         </div>
     </div>
 
