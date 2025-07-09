@@ -383,6 +383,13 @@ async function handleVoiceCommand(action: 'start' | 'stop', sessionId: string): 
           step: 'error',
           sessionId
         });
+        
+        // Stop all intervals on error
+        stopConversationPolling(sessionId);
+        if (sessionIntervals[sessionId]) {
+          clearInterval(sessionIntervals[sessionId]);
+          delete sessionIntervals[sessionId];
+        }
         return;
       }
 
@@ -405,6 +412,13 @@ async function handleVoiceCommand(action: 'start' | 'stop', sessionId: string): 
           sessionId
         });
         audioRecorder.cleanup(audioPath);
+        
+        // Stop all intervals on error
+        stopConversationPolling(sessionId);
+        if (sessionIntervals[sessionId]) {
+          clearInterval(sessionIntervals[sessionId]);
+          delete sessionIntervals[sessionId];
+        }
         return;
       }
 
@@ -418,6 +432,13 @@ async function handleVoiceCommand(action: 'start' | 'stop', sessionId: string): 
           step: 'error',
           sessionId
         });
+        
+        // Stop all intervals on error
+        stopConversationPolling(sessionId);
+        if (sessionIntervals[sessionId]) {
+          clearInterval(sessionIntervals[sessionId]);
+          delete sessionIntervals[sessionId];
+        }
         return;
       }
 
@@ -506,6 +527,13 @@ async function handleVoiceCommand(action: 'start' | 'stop', sessionId: string): 
         });
         console.log(`Summary: ${summaryText}`);
         
+        // Stop all ongoing intervals after summary is delivered
+        stopConversationPolling(sessionId);
+        if (sessionIntervals[sessionId]) {
+          clearInterval(sessionIntervals[sessionId]);
+          delete sessionIntervals[sessionId];
+        }
+        
       } else {
         broadcastToClients({ 
           type: 'error', 
@@ -513,6 +541,13 @@ async function handleVoiceCommand(action: 'start' | 'stop', sessionId: string): 
           step: 'error',
           sessionId
         });
+        
+        // Stop all intervals on error
+        stopConversationPolling(sessionId);
+        if (sessionIntervals[sessionId]) {
+          clearInterval(sessionIntervals[sessionId]);
+          delete sessionIntervals[sessionId];
+        }
       }
       
     } catch (error) {
@@ -524,6 +559,13 @@ async function handleVoiceCommand(action: 'start' | 'stop', sessionId: string): 
         step: 'error',
         sessionId
       });
+      
+      // Stop all intervals on error
+      stopConversationPolling(sessionId);
+      if (sessionIntervals[sessionId]) {
+        clearInterval(sessionIntervals[sessionId]);
+        delete sessionIntervals[sessionId];
+      }
     }
   }
 }
@@ -543,7 +585,7 @@ function startConversationPolling(sessionId: string) {
     console.log(`AI-output: ${aiOut}`);
     // Log only new AI outputs
     broadcastToClients({ type: 'ai-output', message: aiOut, sessionId });
-  }, 11000); // every 2 seconds
+  }, 11000); // every 11 seconds
 }
 
 function stopConversationPolling(sessionId: string) {
