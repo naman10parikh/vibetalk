@@ -56,7 +56,7 @@ const lastSummary: Record<string, LastSummaryInfo> = {};
 // ────────────────────────────────────────────────────────────────────────────────
 // Session-level status buffering so we can create short, spoken summaries instead
 // of dumping every low-level log line on the user.
-interface SessionState { buffer: string[]; timeout?: NodeJS.Timeout; lastRaw?: string; }
+interface SessionState { buffer: string[]; timeout?: NodeJS.Timeout; }
 const sessionState: Record<string, SessionState> = {};
 
 // Helper: generate TTS for status updates and broadcast to clients
@@ -115,10 +115,7 @@ function broadcastToClients(message: any): void {
       if (/^⏳ Monitoring file changes/.test(cleanMsg)) {
         return;
       }
-      // Only push if different from the previous entry to reduce noise
-      if (st.buffer[st.buffer.length - 1] !== cleanMsg) {
-        st.buffer.push(cleanMsg);
-      }
+      st.buffer.push(cleanMsg);
 
       // If no pending flush timer, schedule one. This prevents perpetual delay under heavy logging.
       if (!st.timeout) {
@@ -146,18 +143,7 @@ console.log = (...args: any[]) => {
 async function flushStatusSummary(sid: string) {
   const st = sessionState[sid];
   if (!st || st.buffer.length === 0) return;
-  const raw = st.buffer.join(' · ').trim();
-
-  // 🛑 Avoid generating duplicate spoken updates when log content hasn't changed
-  if (raw === st.lastRaw) {
-    // Clear buffer to avoid infinite growth but skip speaking identical summary
-    st.buffer.length = 0;
-    return;
-  }
-
-  // Track last raw snapshot so we can compare on next flush
-  st.lastRaw = raw;
-  // Clear buffer now that we've captured a snapshot
+  const raw = st.buffer.join(' · ');
   st.buffer.length = 0;
 
   let spoken = raw;
@@ -197,6 +183,7 @@ class EnhancedAutoRefresh {
   private connections = new Set<any>();
   private lastMTime = 0;
   private building = false;
+  private pendingRefreshSessions = new Set<string>(); // Track sessions waiting for refresh
 
   constructor() {
     this.updateMTime();
@@ -259,7 +246,7 @@ class EnhancedAutoRefresh {
         await execAsync('npm run build');
         await this.sleep(200);
         
-        // Step 3: Preparing refresh
+        // Step 3: Preparing refresh with audio coordination
         this.connections.forEach(ws => {
           if (ws.readyState === ws.OPEN) {
             ws.send(JSON.stringify({ 
@@ -273,7 +260,7 @@ class EnhancedAutoRefresh {
         
         await this.sleep(500);
         
-        // Step 4: Refreshing
+        // Step 4: Coordinated refresh with audio delay
         this.connections.forEach(ws => {
           if (ws.readyState === ws.OPEN) {
             ws.send(JSON.stringify({ 
@@ -287,10 +274,13 @@ class EnhancedAutoRefresh {
         
         await this.sleep(300);
         
-        // Final refresh
+        // Final refresh with audio coordination
         this.connections.forEach(ws => {
           if (ws.readyState === ws.OPEN) {
-            ws.send(JSON.stringify({ type: 'refresh-now' }));
+            ws.send(JSON.stringify({ 
+              type: 'refresh-now',
+              allowAudioDelay: true // Signal to widget to wait for audio
+            }));
           }
         });
         
@@ -335,7 +325,7 @@ async function handleVoiceCommand(action: 'start' | 'stop', sessionId: string): 
           if (sessionState[sessionId]?.buffer.length) {
             flushStatusSummary(sessionId);
           }
-        }, 5000);
+        }, 11000);
       }
       
       // Step 1: Initializing
@@ -553,7 +543,7 @@ function startConversationPolling(sessionId: string) {
     console.log(`AI-output: ${aiOut}`);
     // Log only new AI outputs
     broadcastToClients({ type: 'ai-output', message: aiOut, sessionId });
-  }, 5000); // every 2 seconds
+  }, 11000); // every 2 seconds
 }
 
 function stopConversationPolling(sessionId: string) {
@@ -647,6 +637,8 @@ function getChatGPTStyleWidget(): string {
     }
 
     var pendingRefresh = false; // set when server asks page to refresh
+    var allowAudioDelay = false; // allow audio to delay refresh
+    var audioDelayTimeout = null; // timeout for audio delay
 
     // Audio queue helpers ---------------------------------------------------
     function enqueueAudio(url) {
@@ -665,6 +657,19 @@ function getChatGPTStyleWidget(): string {
         logAudio('Queue empty – performing full reload');
         location.reload();
       }
+    }
+
+    function scheduleRefreshWithAudioDelay() {
+      if (audioDelayTimeout) {
+        clearTimeout(audioDelayTimeout);
+      }
+      
+      logAudio('Scheduling delayed refresh (3s) to allow audio completion');
+      // Wait for audio to finish, then refresh
+      audioDelayTimeout = setTimeout(() => {
+        logAudio('Audio delay timeout – performing refresh');
+        location.reload();
+      }, 3000); // 3 second delay to allow audio to complete
     }
 
     function playNextAudio() {
@@ -699,19 +704,37 @@ function getChatGPTStyleWidget(): string {
         logAudio('Ended ' + url);
         isPlayingAudio = false;
         playNextAudio();
-        maybeReload();
+        
+        // If we have a pending refresh with audio delay, check if we should refresh now
+        if (pendingRefresh && allowAudioDelay && audioQueue.length === 0) {
+          logAudio('Audio completed – performing delayed refresh');
+          location.reload();
+        } else {
+          maybeReload();
+        }
       };
 
       audio.onerror = function(err) {
         console.error('[VibeTalk-Audio] error:', err);
         isPlayingAudio = false;
         playNextAudio();
-        maybeReload();
+        
+        // If we have a pending refresh with audio delay, check if we should refresh now
+        if (pendingRefresh && allowAudioDelay && audioQueue.length === 0) {
+          logAudio('Audio error – performing delayed refresh');
+          location.reload();
+        } else {
+          maybeReload();
+        }
       };
     }
 
     function clearAudioQueue() {
       audioQueue.length = 0;
+      if (audioDelayTimeout) {
+        clearTimeout(audioDelayTimeout);
+        audioDelayTimeout = null;
+      }
     }
 
     // Main container - ChatGPT style
@@ -872,7 +895,19 @@ function getChatGPTStyleWidget(): string {
           break;
         case 'refresh-now':
           pendingRefresh = true;
+          allowAudioDelay = message.allowAudioDelay || false;
           showRefreshAnimation();
+          
+          // If audio delay is allowed and we have audio playing, schedule delayed refresh
+          if (allowAudioDelay && (isPlayingAudio || audioQueue.length > 0)) {
+            logAudio('Audio playing – scheduling delayed refresh');
+            updateStatus('🎵 Waiting for audio to finish...', '🎵', '#8b5cf6');
+            scheduleRefreshWithAudioDelay();
+          } else {
+            // No audio playing, refresh immediately
+            logAudio('No audio playing – refreshing immediately');
+            maybeReload();
+          }
           break;
       }
     }
