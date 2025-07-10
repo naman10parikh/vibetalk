@@ -3,7 +3,7 @@
 import * as http from 'http';
 import * as fs from 'fs';
 import * as path from 'path';
-import { WebSocketServer } from 'ws';
+import { WebSocketServer, WebSocket } from 'ws';
 import { exec, execSync } from 'child_process';
 import { promisify } from 'util';
 import { AudioRecorder } from '../audio/recorder';
@@ -43,8 +43,8 @@ const conversationPollIntervals: Record<string, NodeJS.Timeout> = {};
 const lastAIOutputs: Record<string, string> = {};
 
 // Ports
-const HTTP_PORT = process.env.PORT ? parseInt(process.env.PORT) : 3000;
-const WS_PORT = process.env.WS_PORT ? parseInt(process.env.WS_PORT) : HTTP_PORT + 1;
+const HTTP_PORT = process.env.HTTP_PORT ? parseInt(process.env.HTTP_PORT) : 3000;
+const WS_PORT = process.env.REFRESH_PORT ? parseInt(process.env.REFRESH_PORT) : 3001;
 
 // Flush buffered status every 6 s to sound more natural
 const SUMMARY_FLUSH_MS = 6000;
@@ -176,127 +176,6 @@ async function flushStatusSummary(sid: string) {
     audioUrl: file ? `/speech/${file}` : undefined,
     sessionId: sid
   });
-}
-
-// Enhanced auto-refresh with detailed progress
-class EnhancedAutoRefresh {
-  private connections = new Set<any>();
-  private lastMTime = 0;
-  private building = false;
-  private pendingRefreshSessions = new Set<string>(); // Track sessions waiting for refresh
-
-  constructor() {
-    this.updateMTime();
-    setInterval(() => this.check(), 800); // Faster checking
-  }
-
-  addConnection(ws: any) {
-    this.connections.add(ws);
-    ws.on('close', () => this.connections.delete(ws));
-  }
-
-  private updateMTime() {
-    try {
-      this.lastMTime = fs.statSync(path.join(process.cwd(), 'src/web/index.html')).mtimeMs;
-    } catch {}
-  }
-
-  private async check() {
-    if (this.building) return;
-    try {
-      const p = path.join(process.cwd(), 'src/web/index.html');
-      const st = fs.statSync(p).mtimeMs;
-      if (st > this.lastMTime) {
-        // Log changed files with elapsed time
-        const { stdout: changedStd } = await execAsync('git diff --name-only');
-        const files = changedStd.split('\n').filter(Boolean);
-        const elapsed1 = ((Date.now() - startTime) / 1000).toFixed(1);
-        broadcastToClients({ type: 'log', message: `[+${elapsed1}s] 📂 Files changed: ${files.join(', ') || 'none'}` });
-        broadcastToClients({ type: 'log', message: `[+${elapsed1}s] 📁 Change detected - starting enhanced rebuild...` });
-        console.log('File change detected');
-        this.lastMTime = st;
-        this.building = true;
-        
-        // Step 1: Notify of change detection
-        this.connections.forEach(ws => {
-          if (ws.readyState === ws.OPEN) {
-            ws.send(JSON.stringify({ 
-              type: 'progress', 
-              step: 'changes-detected',
-              message: '📁 Changes detected in source files',
-              progress: 25
-            }));
-          }
-        });
-        
-        await this.sleep(300);
-        
-        // Step 2: Building
-        this.connections.forEach(ws => {
-          if (ws.readyState === ws.OPEN) {
-            ws.send(JSON.stringify({ 
-              type: 'progress', 
-              step: 'building',
-              message: '🔨 Rebuilding project with your changes',
-              progress: 50
-            }));
-          }
-        });
-        
-        await execAsync('npm run build');
-        await this.sleep(200);
-        
-        // Step 3: Preparing refresh with audio coordination
-        this.connections.forEach(ws => {
-          if (ws.readyState === ws.OPEN) {
-            ws.send(JSON.stringify({ 
-              type: 'progress', 
-              step: 'preparing-refresh',
-              message: '🔄 Preparing to refresh your page',
-              progress: 75
-            }));
-          }
-        });
-        
-        await this.sleep(500);
-        
-        // Step 4: Coordinated refresh with audio delay
-        this.connections.forEach(ws => {
-          if (ws.readyState === ws.OPEN) {
-            ws.send(JSON.stringify({ 
-              type: 'progress', 
-              step: 'refreshing',
-              message: '✨ Refreshing page with changes',
-              progress: 100
-            }));
-          }
-        });
-        
-        await this.sleep(300);
-        
-        // Final refresh with audio coordination
-        this.connections.forEach(ws => {
-          if (ws.readyState === ws.OPEN) {
-            ws.send(JSON.stringify({ 
-              type: 'refresh-now',
-              allowAudioDelay: true // Signal to widget to wait for audio
-            }));
-          }
-        });
-        
-        const elapsed2 = ((Date.now() - startTime) / 1000).toFixed(1);
-        broadcastToClients({ type: 'log', message: `[+${elapsed2}s] ✅ Enhanced rebuild complete` });
-        this.building = false;
-      }
-    } catch (error) {
-      console.error('❌ Enhanced auto-refresh error:', error);
-      this.building = false;
-    }
-  }
-  
-  private sleep(ms: number): Promise<void> {
-    return new Promise(resolve => setTimeout(resolve, ms));
-  }
 }
 
 // Enhanced voice command handler with detailed progress
@@ -576,13 +455,241 @@ async function extractLatestAIOutput(): Promise<string | null> {
   return null;
 }
 
-// HTTP Server
+// Helper: convert text to speech using OpenAI TTS. Returns filename (within temp/) or null.
+async function generateSpeechAudio(text: string): Promise<string | null> {
+  if (!openaiClient) {
+    console.log('🔈 Skipping TTS (no OpenAI client) – text:', text);
+    return null;
+  }
+  try {
+    const mp3 = await openaiClient!.audio.speech.create({
+      model: 'tts-1',
+      voice: 'alloy',
+      input: text,
+      speed: 1.11
+    });
+    const buffer = Buffer.from(await mp3.arrayBuffer());
+    const fileName = `speech_${Date.now()}.mp3`;
+    const filePath = path.join(process.cwd(), 'temp', fileName);
+    await fs.promises.writeFile(filePath, buffer);
+
+    // ✨ DEBUG: log file size
+    console.log(`🔊 Speech audio generated (${(buffer.length/1024).toFixed(1)} KB): ${fileName}`);
+    return fileName;
+  } catch (err) {
+    console.error('❌ Failed to generate speech audio:', err, '\nText:', text);
+    return null;
+  }
+}
+
+// Robust capture: try to grab the first Cursor window (even when not focused). Fallback to full-screen if anything fails.
+async function captureCursorWindowImage(): Promise<Buffer> {
+  // Try Python-based capture leveraging Quartz for Cursor IDE window
+  try {
+    const buf: Buffer = execSync(`python3 - << 'END_PY'
+import sys, os
+sys.path.insert(0, os.getcwd())
+from test import capture_cursor_window
+buf = capture_cursor_window()
+sys.stdout.buffer.write(buf)
+END_PY`, { encoding: 'buffer' });
+    return buf;
+  } catch (err) {
+    console.error('⚠️ Python-based capture failed, falling back to full-screen:', err);
+  }
+
+  // Fallback: full-screen capture (cross-platform)
+  try {
+    return await screenshot({ format: 'png' });
+  } catch (err) {
+    console.error('❌ Full-screen capture failed:', err);
+    throw err;
+  }
+}
+
+// Modify captureConversationTurn to use new capture
+async function captureConversationTurn(): Promise<{ user_input?: string; AI_output?: string } | null> {
+  if (!openaiClient) return null;
+  try {
+    const imgBuffer = await captureCursorWindowImage();
+    const base64Image = imgBuffer.toString('base64');
+
+    const completion = await openaiClient.responses.create({
+      model: 'gpt-4.1-mini',
+      input: [
+        {
+          role: 'user',
+          content: [
+            {
+              type: 'input_text',
+              text: 'This is a screenshot of a development IDE. Somewhere on the screen you will find ONLY the AI agent\'s latest reply text. Extract it and RETURN EXACTLY valid JSON in the form:\n{\n  "AI_output": "<ai reply text>"\n}\nIf no AI reply visible, set "AI_output" to an empty string. Do not include code fences or extra text.'
+            },
+            {
+              type: 'input_image',
+              image_url: `data:image/png;base64,${base64Image}`
+            }
+          ]
+        }
+      ]
+    } as any);
+
+    const content: string = (completion as any).output_text?.trim() || (completion as any).choices?.[0]?.message?.content?.trim() || '';
+    if (!content) return null;
+
+    try {
+      const parsed = JSON.parse(content);
+      return parsed;
+    } catch (err) {
+      console.error('❌ Failed to parse Vision JSON:', err, content);
+      // fallback: return all content as AI_output
+      return { AI_output: content };
+    }
+  } catch (err) {
+    console.error('❌ captureConversationTurn failed:', err);
+    return null;
+  }
+}
+
+// Helper: summarize diff + transcript into friendly summary
+async function generateFriendlySummary(transcript: string): Promise<string> {
+  // Determine baseline for this session
+  const baseline = latestSessionId ? sessionBaseline[latestSessionId] || null : null;
+  // Fallback when no API key – keep it deterministic and grounded.
+  if (!openaiClient) {
+    try {
+      let diff = '';
+      let filesChanged: string[] = [];
+      if (baseline) {
+        let listStd = '';
+        let diffStd = '';
+        listStd = (await execAsync(`git diff --name-only ${baseline}`)).stdout;
+        diffStd = (await execAsync(`git diff --unified=0 ${baseline}`)).stdout;
+        filesChanged = listStd.split('\n').filter(Boolean).slice(0, 20);
+        diff = diffStd.slice(0, 6000);
+      } else {
+        const { stdout } = await execAsync('git diff --name-only');
+        filesChanged = stdout.split('\n').filter(Boolean);
+        if (filesChanged.length === 0) {
+          return `No file changes detected for request: "${transcript}"`;
+        }
+        return `Changed files: ${filesChanged.join(', ')} – request: "${transcript}"`;
+      }
+      return `Changed files: ${filesChanged.join(', ')} – request: "${transcript}"`;
+    } catch {
+      return `Code updated for: "${transcript}"`;
+    }
+  }
+
+  // When API key is present, craft a grounded, file-aware summary.
+  let diff = '';
+  let filesChanged: string[] = [];
+  try {
+    // Capture changed file list (max 20 for brevity).
+    if (baseline) {
+      let listStd = '';
+      let diffStd = '';
+      listStd = (await execAsync(`git diff --name-only ${baseline}`)).stdout;
+      diffStd = (await execAsync(`git diff --unified=0 ${baseline}`)).stdout;
+      filesChanged = listStd.split('\n').filter(Boolean).slice(0, 20);
+      diff = diffStd.slice(0, 6000); // keep prompt small, ~6K chars
+    } else {
+      const { stdout: listStd } = await execAsync('git diff --name-only');
+      filesChanged = listStd.split('\n').filter(Boolean).slice(0, 20);
+      const { stdout: diffStd } = await execAsync('git diff --unified=0');
+      diff = diffStd.slice(0, 6000); // keep prompt small, ~6K chars
+    }
+  } catch {}
+
+  // Build the prompt emphasising the checklist guidelines.
+  const systemPrompt = `You are a concise, voice-friendly change summary generator. After any code or configuration update, briefly describe what the user requested and what the agent did, using plain, everyday language without jargon or filler. Keep it short so a text-to-speech system reads smoothly. If nothing changed, respond "No changes made." Only describe the actual request and its outcome—do not invent or add extra details.`;
+
+  const userPrompt = `User voice request: "${transcript}"\n\nChanged files detected: ${filesChanged.join(', ') || '[none]'}\n\nGit diff:\n${diff || '[no diff detected]'}`;
+
+  try {
+    const completion = await openaiClient.chat.completions.create({
+      model: 'gpt-4o-mini',
+      messages: [
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content: userPrompt }
+      ],
+      max_tokens: 180
+    });
+    const aiContent = completion.choices[0]?.message?.content ?? '';
+    return aiContent.trim();
+  } catch (err) {
+    console.error('❌ Failed to generate diff summary:', err);
+    if (filesChanged.length === 0) {
+      return `No file changes detected for request: "${transcript}"`;
+    }
+    return `Changed files: ${filesChanged.join(', ')} – request: "${transcript}"`;
+  }
+}
+
+// Audio-aware auto-refresh for file changes
+class AudioAwareAutoRefresh {
+  private connections = new Set<any>();
+  private lastMTime = 0;
+  private building = false;
+
+  constructor() {
+    this.updateMTime();
+    setInterval(() => this.check(), 1000);
+  }
+
+  addConnection(ws: any) {
+    this.connections.add(ws);
+    ws.on('close', () => this.connections.delete(ws));
+  }
+
+
+
+  private updateMTime() {
+    try {
+      this.lastMTime = fs.statSync(path.join(process.cwd(), 'src/web/index.html')).mtimeMs;
+    } catch {}
+  }
+
+  private async check() {
+    if (this.building) return;
+    try {
+      const p = path.join(process.cwd(), 'src/web/index.html');
+      const st = fs.statSync(p).mtimeMs;
+      if (st > this.lastMTime) {
+        const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+        console.log(`[+${elapsed}s] 📁 File change detected - running build and refreshing browser`);
+        this.lastMTime = st;
+        this.building = true;
+        // Run build step
+        await execAsync('npm run build');
+        // Now trigger the refresh
+        this.connections.forEach(ws => {
+          if (ws.readyState === ws.OPEN) {
+            ws.send(JSON.stringify({ 
+              type: 'refresh-now',
+              message: 'Refreshing page with changes',
+              timestamp: Date.now()
+            }));
+          }
+        });
+        this.building = false;
+      }
+    } catch (error) {
+      console.error('❌ Audio-aware auto-refresh error:', error);
+      this.building = false;
+    }
+  }
+  
+  private sleep(ms: number): Promise<void> {
+    return new Promise(resolve => setTimeout(resolve, ms));
+  }
+}
+
+// HTTP Server for serving the main page
 const httpServer = http.createServer((req, res) => {
   const url = req.url || '/';
 
   if (url === '/' || url === '/index.html') {
     const indexPath = path.join(__dirname, 'index.html');
-    
     try {
       const content = fs.readFileSync(indexPath, 'utf8');
       res.writeHead(200, { 
@@ -599,7 +706,7 @@ const httpServer = http.createServer((req, res) => {
       'Content-Type': 'application/javascript',
       'Cache-Control': 'no-cache'
     });
-    res.end(getChatGPTStyleWidget());
+    res.end(getEnhancedWidget());
   } else if (url.startsWith('/speech/')) {
     const fileName = path.basename(url);
     const audioPath = path.join(process.cwd(), 'temp', fileName);
@@ -620,8 +727,8 @@ const httpServer = http.createServer((req, res) => {
   }
 });
 
-// ChatGPT Mac App Style Widget
-function getChatGPTStyleWidget(): string {
+// Enhanced widget with dual WebSocket connections
+function getEnhancedWidget(): string {
   return `(function(){
     var recording = false;
     var ws = null;
@@ -637,8 +744,6 @@ function getChatGPTStyleWidget(): string {
     }
 
     var pendingRefresh = false; // set when server asks page to refresh
-    var allowAudioDelay = false; // allow audio to delay refresh
-    var audioDelayTimeout = null; // timeout for audio delay
 
     // Audio queue helpers ---------------------------------------------------
     function enqueueAudio(url) {
@@ -659,18 +764,7 @@ function getChatGPTStyleWidget(): string {
       }
     }
 
-    function scheduleRefreshWithAudioDelay() {
-      if (audioDelayTimeout) {
-        clearTimeout(audioDelayTimeout);
-      }
-      
-      logAudio('Scheduling delayed refresh (3s) to allow audio completion');
-      // Wait for audio to finish, then refresh
-      audioDelayTimeout = setTimeout(() => {
-        logAudio('Audio delay timeout – performing refresh');
-        location.reload();
-      }, 3000); // 3 second delay to allow audio to complete
-    }
+
 
     function playNextAudio() {
       if (isPlayingAudio || audioQueue.length === 0) return;
@@ -731,10 +825,6 @@ function getChatGPTStyleWidget(): string {
 
     function clearAudioQueue() {
       audioQueue.length = 0;
-      if (audioDelayTimeout) {
-        clearTimeout(audioDelayTimeout);
-        audioDelayTimeout = null;
-      }
     }
 
     // Main container - ChatGPT style
@@ -837,7 +927,7 @@ function getChatGPTStyleWidget(): string {
 
     // WebSocket connection
     function connectWebSocket() {
-      ws = new WebSocket('ws://' + location.hostname + ':${WS_PORT}');
+      ws = new WebSocket('ws://' + location.hostname + ':3001');
       
       ws.onopen = function() {
         console.log('[VibeTalk] WebSocket connected');
@@ -895,19 +985,12 @@ function getChatGPTStyleWidget(): string {
           break;
         case 'refresh-now':
           pendingRefresh = true;
-          allowAudioDelay = message.allowAudioDelay || false;
           showRefreshAnimation();
           
-          // If audio delay is allowed and we have audio playing, schedule delayed refresh
-          if (allowAudioDelay && (isPlayingAudio || audioQueue.length > 0)) {
-            logAudio('Audio playing – scheduling delayed refresh');
-            updateStatus('🎵 Waiting for audio to finish...', '🎵', '#8b5cf6');
-            scheduleRefreshWithAudioDelay();
-          } else {
-            // No audio playing, refresh immediately
-            logAudio('No audio playing – refreshing immediately');
-            maybeReload();
-          }
+          // In decoupled architecture, refresh immediately
+          // Audio coordination is handled by the audio server independently
+          logAudio('Refreshing immediately (decoupled architecture)');
+          location.reload();
           break;
       }
     }
@@ -950,8 +1033,8 @@ function getChatGPTStyleWidget(): string {
     }
     
     function handleTranscription(message) {
-      var shortTranscript = message.transcript.length > 40 ? 
-        message.transcript.substring(0, 40) + '...' : message.transcript;
+      var shortTranscript = message.message.length > 40 ? 
+        message.message.substring(0, 40) + '...' : message.message;
       updateStatus('Understood: "' + shortTranscript + '"', '✅', '#10b981');
       actionBtn.innerHTML = '✅';
     }
@@ -1064,10 +1147,33 @@ function getChatGPTStyleWidget(): string {
   })();`;
 }
 
-// Create enhanced auto-refresh instance
-const autoRefresh = new EnhancedAutoRefresh();
+// Create auto-refresh instance
+const autoRefresh = new AudioAwareAutoRefresh();
 
-// WebSocket server
+// Connect to audio server for coordination
+let audioServerWs: any = null;
+function connectToAudioServer() {
+  try {
+    audioServerWs = new WebSocket('ws://localhost:3002');
+    audioServerWs.on('open', () => {
+      console.log('🔊 Connected to audio server for coordination');
+      
+    });
+    audioServerWs.on('close', () => {
+      console.log('🔊 Audio server connection closed, reconnecting...');
+      setTimeout(connectToAudioServer, 5000);
+    });
+    audioServerWs.on('error', (error: any) => {
+      console.error('❌ Audio server connection error:', error);
+      setTimeout(connectToAudioServer, 5000);
+    });
+  } catch (error) {
+    console.error('❌ Failed to connect to audio server:', error);
+    setTimeout(connectToAudioServer, 5000);
+  }
+}
+
+// WebSocket server for refresh coordination
 const wss = new WebSocketServer({ port: WS_PORT });
 
 wss.on('connection', ws => {
@@ -1101,182 +1207,15 @@ wss.on('connection', ws => {
   });
 });
 
-// Helper: summarize diff + transcript into friendly summary
-async function generateFriendlySummary(transcript: string): Promise<string> {
-  // Determine baseline for this session
-  const baseline = latestSessionId ? sessionBaseline[latestSessionId] || null : null;
-  // Fallback when no API key – keep it deterministic and grounded.
-  if (!openaiClient) {
-    try {
-      let diff = '';
-      let filesChanged: string[] = [];
-      if (baseline) {
-        let listStd = '';
-        let diffStd = '';
-        listStd = (await execAsync(`git diff --name-only ${baseline}`)).stdout;
-        diffStd = (await execAsync(`git diff --unified=0 ${baseline}`)).stdout;
-        filesChanged = listStd.split('\n').filter(Boolean).slice(0, 20);
-        diff = diffStd.slice(0, 6000);
-      } else {
-        const { stdout } = await execAsync('git diff --name-only');
-        filesChanged = stdout.split('\n').filter(Boolean);
-        if (filesChanged.length === 0) {
-          return `No file changes detected for request: "${transcript}"`;
-        }
-        return `Changed files: ${filesChanged.join(', ')} – request: "${transcript}"`;
-      }
-      return `Changed files: ${filesChanged.join(', ')} – request: "${transcript}"`;
-    } catch {
-      return `Code updated for: "${transcript}"`;
-    }
-  }
-
-  // When API key is present, craft a grounded, file-aware summary.
-  let diff = '';
-  let filesChanged: string[] = [];
-  try {
-    // Capture changed file list (max 20 for brevity).
-    if (baseline) {
-      let listStd = '';
-      let diffStd = '';
-      listStd = (await execAsync(`git diff --name-only ${baseline}`)).stdout;
-      diffStd = (await execAsync(`git diff --unified=0 ${baseline}`)).stdout;
-      filesChanged = listStd.split('\n').filter(Boolean).slice(0, 20);
-      diff = diffStd.slice(0, 6000); // keep prompt small, ~6K chars
-    } else {
-      const { stdout: listStd } = await execAsync('git diff --name-only');
-      filesChanged = listStd.split('\n').filter(Boolean).slice(0, 20);
-      const { stdout: diffStd } = await execAsync('git diff --unified=0');
-      diff = diffStd.slice(0, 6000); // keep prompt small, ~6K chars
-    }
-  } catch {}
-
-  // Build the prompt emphasising the checklist guidelines.
-  const systemPrompt = `You are a concise, voice-friendly change summary generator. After any code or configuration update, briefly describe what the user requested and what the agent did, using plain, everyday language without jargon or filler. Keep it short so a text-to-speech system reads smoothly. If nothing changed, respond “No changes made.” Only describe the actual request and its outcome—do not invent or add extra details.`;
-
-  const userPrompt = `User voice request: "${transcript}"\n\nChanged files detected: ${filesChanged.join(', ') || '[none]'}\n\nGit diff:\n${diff || '[no diff detected]'}`;
-
-  try {
-    const completion = await openaiClient.chat.completions.create({
-      model: 'gpt-4o-mini',
-      messages: [
-        { role: 'system', content: systemPrompt },
-        { role: 'user', content: userPrompt }
-      ],
-      max_tokens: 180
-    });
-    const aiContent = completion.choices[0]?.message?.content ?? '';
-    return aiContent.trim();
-  } catch (err) {
-    console.error('❌ Failed to generate diff summary:', err);
-    if (filesChanged.length === 0) {
-      return `No file changes detected for request: "${transcript}"`;
-    }
-    return `Changed files: ${filesChanged.join(', ')} – request: "${transcript}"`;
-  }
-}
-
-// Helper: convert text to speech using OpenAI TTS. Returns filename (within temp/) or null.
-async function generateSpeechAudio(text: string): Promise<string | null> {
-  if (!openaiClient) {
-    console.log('🔈 Skipping TTS (no OpenAI client) – text:', text);
-    return null;
-  }
-  try {
-    const mp3 = await openaiClient!.audio.speech.create({
-      model: 'tts-1',
-      voice: 'alloy',
-      input: text,
-      speed: 1.11
-    });
-    const buffer = Buffer.from(await mp3.arrayBuffer());
-    const fileName = `speech_${Date.now()}.mp3`;
-    const filePath = path.join(process.cwd(), 'temp', fileName);
-    await fs.promises.writeFile(filePath, buffer);
-
-    // ✨ DEBUG: log file size
-    console.log(`🔊 Speech audio generated (${(buffer.length/1024).toFixed(1)} KB): ${fileName}`);
-    return fileName;
-  } catch (err) {
-    console.error('❌ Failed to generate speech audio:', err, '\nText:', text);
-    return null;
-  }
-}
-
-// Robust capture: try to grab the first Cursor window (even when not focused). Fallback to full-screen if anything fails.
-async function captureCursorWindowImage(): Promise<Buffer> {
-  // Try Python-based capture leveraging Quartz for Cursor IDE window
-  try {
-    const buf: Buffer = execSync(`python3 - << 'END_PY'
-import sys, os
-sys.path.insert(0, os.getcwd())
-from test import capture_cursor_window
-buf = capture_cursor_window()
-sys.stdout.buffer.write(buf)
-END_PY`, { encoding: 'buffer' });
-    return buf;
-  } catch (err) {
-    console.error('⚠️ Python-based capture failed, falling back to full-screen:', err);
-  }
-
-  // Fallback: full-screen capture (cross-platform)
-  try {
-    return await screenshot({ format: 'png' });
-  } catch (err) {
-    console.error('❌ Full-screen capture failed:', err);
-    throw err;
-  }
-}
-
-// Modify captureConversationTurn to use new capture
-async function captureConversationTurn(): Promise<{ user_input?: string; AI_output?: string } | null> {
-  if (!openaiClient) return null;
-  try {
-    const imgBuffer = await captureCursorWindowImage();
-    const base64Image = imgBuffer.toString('base64');
-
-    const completion = await openaiClient.responses.create({
-      model: 'gpt-4.1-mini',
-      input: [
-        {
-          role: 'user',
-          content: [
-            {
-              type: 'input_text',
-              text: 'This is a screenshot of a development IDE. Somewhere on the screen you will find ONLY the AI agent\'s latest reply text. Extract it and RETURN EXACTLY valid JSON in the form:\n{\n  "AI_output": "<ai reply text>"\n}\nIf no AI reply visible, set "AI_output" to an empty string. Do not include code fences or extra text.'
-            },
-            {
-              type: 'input_image',
-              image_url: `data:image/png;base64,${base64Image}`
-            }
-          ]
-        }
-      ]
-    } as any);
-
-    const content: string = (completion as any).output_text?.trim() || (completion as any).choices?.[0]?.message?.content?.trim() || '';
-    if (!content) return null;
-
-    try {
-      const parsed = JSON.parse(content);
-      return parsed;
-    } catch (err) {
-      console.error('❌ Failed to parse Vision JSON:', err, content);
-      // fallback: return all content as AI_output
-      return { AI_output: content };
-    }
-  } catch (err) {
-    console.error('❌ captureConversationTurn failed:', err);
-    return null;
-  }
-}
-
 // Launch servers
 httpServer.listen(HTTP_PORT, () => {
   broadcastToClients({ type: 'log', message: '🚀 Enhanced ChatGPT-Style VibeTalk Server Started' });
   broadcastToClients({ type: 'log', message: `📱 HTTP Server: http://localhost:${HTTP_PORT}` });
   broadcastToClients({ type: 'log', message: `🔌 WebSocket Server: ws://localhost:${WS_PORT}` });
   broadcastToClients({ type: 'log', message: '' });
+  
+  // Connect to audio server for coordination
+  connectToAudioServer();
   
   if (!config.isValid()) {
     broadcastToClients({ type: 'log', message: '⚠️  OpenAI API key not configured' });
@@ -1289,4 +1228,4 @@ httpServer.listen(HTTP_PORT, () => {
   broadcastToClients({ type: 'log', message: '━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━' });
 });
 
-export { httpServer, wss };
+export { httpServer, wss }; 
