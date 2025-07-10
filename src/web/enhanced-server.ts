@@ -506,6 +506,13 @@ async function handleVoiceCommand(action: 'start' | 'stop', sessionId: string): 
         });
         console.log(`Summary: ${summaryText}`);
         
+        // Auto-restart the assistant for the next command after a short delay
+        setTimeout(() => {
+          if (!isRecording) {
+            handleVoiceCommand('start', sessionId);
+          }
+        }, 1200); // 1.2s delay to avoid overlap
+        
       } else {
         broadcastToClients({ 
           type: 'error', 
@@ -1105,54 +1112,64 @@ wss.on('connection', ws => {
 async function generateFriendlySummary(transcript: string): Promise<string> {
   // Determine baseline for this session
   const baseline = latestSessionId ? sessionBaseline[latestSessionId] || null : null;
-  // Fallback when no API key – keep it deterministic and grounded.
-  if (!openaiClient) {
+  
+  // Enhanced file change detection with better error handling
+  let filesChanged: string[] = [];
+  let diff = '';
+  
+  try {
+    // First, check if we're in a git repository
+    await execAsync('git status');
+    
+    // Capture changed file list (max 20 for brevity).
+    if (baseline) {
+      console.log(`🔍 Checking git diff from baseline: ${baseline}`);
+      const listResult = await execAsync(`git diff --name-only ${baseline}`);
+      const diffResult = await execAsync(`git diff --unified=0 ${baseline}`);
+      filesChanged = listResult.stdout.split('\n').filter(Boolean).slice(0, 20);
+      diff = diffResult.stdout.slice(0, 6000);
+    } else {
+      console.log('🔍 Checking git diff for unstaged changes');
+      const listResult = await execAsync('git diff --name-only');
+      const diffResult = await execAsync('git diff --unified=0');
+      filesChanged = listResult.stdout.split('\n').filter(Boolean).slice(0, 20);
+      diff = diffResult.stdout.slice(0, 6000);
+    }
+    
+    console.log(`📁 Files changed: ${filesChanged.length}`, filesChanged);
+    console.log(`📝 Diff length: ${diff.length} characters`);
+    
+  } catch (err) {
+    console.error('❌ Git diff failed:', err);
+    // Fallback: check for modified files using git status
     try {
-      let diff = '';
-      let filesChanged: string[] = [];
-      if (baseline) {
-        let listStd = '';
-        let diffStd = '';
-        listStd = (await execAsync(`git diff --name-only ${baseline}`)).stdout;
-        diffStd = (await execAsync(`git diff --unified=0 ${baseline}`)).stdout;
-        filesChanged = listStd.split('\n').filter(Boolean).slice(0, 20);
-        diff = diffStd.slice(0, 6000);
-      } else {
-        const { stdout } = await execAsync('git diff --name-only');
-        filesChanged = stdout.split('\n').filter(Boolean);
-        if (filesChanged.length === 0) {
-          return `No file changes detected for request: "${transcript}"`;
-        }
-        return `Changed files: ${filesChanged.join(', ')} – request: "${transcript}"`;
-      }
-      return `Changed files: ${filesChanged.join(', ')} – request: "${transcript}"`;
-    } catch {
-      return `Code updated for: "${transcript}"`;
+      const statusResult = await execAsync('git status --porcelain');
+      const modifiedFiles = statusResult.stdout
+        .split('\n')
+        .filter(line => line.trim())
+        .map(line => line.split(' ').pop())
+        .filter((f): f is string => Boolean(f))
+        .slice(0, 20);
+      
+      filesChanged = modifiedFiles;
+      console.log(`📁 Modified files (fallback): ${filesChanged.length}`, filesChanged);
+    } catch (statusErr) {
+      console.error('❌ Git status also failed:', statusErr);
     }
   }
 
-  // When API key is present, craft a grounded, file-aware summary.
-  let diff = '';
-  let filesChanged: string[] = [];
-  try {
-    // Capture changed file list (max 20 for brevity).
-    if (baseline) {
-      let listStd = '';
-      let diffStd = '';
-      listStd = (await execAsync(`git diff --name-only ${baseline}`)).stdout;
-      diffStd = (await execAsync(`git diff --unified=0 ${baseline}`)).stdout;
-      filesChanged = listStd.split('\n').filter(Boolean).slice(0, 20);
-      diff = diffStd.slice(0, 6000); // keep prompt small, ~6K chars
-    } else {
-      const { stdout: listStd } = await execAsync('git diff --name-only');
-      filesChanged = listStd.split('\n').filter(Boolean).slice(0, 20);
-      const { stdout: diffStd } = await execAsync('git diff --unified=0');
-      diff = diffStd.slice(0, 6000); // keep prompt small, ~6K chars
+  // Fallback when no API key – keep it deterministic and grounded.
+  if (!openaiClient) {
+    if (filesChanged.length === 0) {
+      return `I processed your request: "${transcript}". No file changes were detected.`;
     }
-  } catch {}
+    const fileList = filesChanged.slice(0, 3).join(', ');
+    const moreFiles = filesChanged.length > 3 ? ` and ${filesChanged.length - 3} more` : '';
+    return `I processed your request: "${transcript}". Updated ${filesChanged.length} file${filesChanged.length > 1 ? 's' : ''}: ${fileList}${moreFiles}.`;
+  }
 
-  // Build the prompt emphasising the checklist guidelines.
-  const systemPrompt = `You are a concise, voice-friendly change summary generator. After any code or configuration update, briefly describe what the user requested and what the agent did, using plain, everyday language without jargon or filler. Keep it short so a text-to-speech system reads smoothly. If nothing changed, respond “No changes made.” Only describe the actual request and its outcome—do not invent or add extra details.`;
+  // When API key is present, craft a grounded, file-aware summary.
+  const systemPrompt = `You are a concise, voice-friendly change summary generator. After any code or configuration update, briefly describe what the user requested and what the agent did, using plain, everyday language without jargon or filler. Keep it short so a text-to-speech system reads smoothly. If no changes were made, say \"I processed your request but no changes were made.\" Only describe the actual request and its outcome—do not invent or add extra details.`;
 
   const userPrompt = `User voice request: "${transcript}"\n\nChanged files detected: ${filesChanged.join(', ') || '[none]'}\n\nGit diff:\n${diff || '[no diff detected]'}`;
 
@@ -1170,9 +1187,11 @@ async function generateFriendlySummary(transcript: string): Promise<string> {
   } catch (err) {
     console.error('❌ Failed to generate diff summary:', err);
     if (filesChanged.length === 0) {
-      return `No file changes detected for request: "${transcript}"`;
+      return `I processed your request: "${transcript}". No file changes were detected.`;
     }
-    return `Changed files: ${filesChanged.join(', ')} – request: "${transcript}"`;
+    const fileList = filesChanged.slice(0, 3).join(', ');
+    const moreFiles = filesChanged.length > 3 ? ` and ${filesChanged.length - 3} more` : '';
+    return `I processed your request: "${transcript}". Updated ${filesChanged.length} file${filesChanged.length > 1 ? 's' : ''}: ${fileList}${moreFiles}.`;
   }
 }
 
