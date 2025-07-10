@@ -12,7 +12,7 @@ export class Config {
   public readonly tempDir: string;
 
   constructor() {
-    this.openaiApiKey = process.env.OPENAI_API_KEY || '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';
+    this.openaiApiKey = process.env.OPENAI_API_KEY || '';
     this.hotkey = process.env.VIBETALK_HOTKEY || 'cmd+shift+v';
     this.audioFormat = process.env.VIBETALK_AUDIO_FORMAT || 'wav';
     
