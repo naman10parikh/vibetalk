@@ -54,41 +54,38 @@ def capture_cursor_window():
     if not cursor_windows:
         raise RuntimeError("No Cursor IDE windows found. Please make sure Cursor is running.")
     
-    # Try to find the main window (usually the one with a file path or project name)
+    # Try windows in z-order (frontmost first) until we successfully grab an image
     main_window = None
+    img_ref = None
+
     for window in cursor_windows:
-        # Skip windows with generic titles or no title
-        if window['title'] and window['title'] not in ['', 'Cursor']:
+        w_id = window['window_id']
+        img_ref = CG.CGWindowListCreateImage(
+            CG.CGRectNull,
+            QZ.kCGWindowListOptionIncludingWindow,
+            w_id,
+            CG.kCGWindowImageBoundsIgnoreFraming,
+        )
+        if img_ref:
             main_window = window
-            break
-    
-    # If no main window found, use the first available Cursor window
-    if not main_window:
-        main_window = cursor_windows[0]
-    
-    print(f"Capturing window: {main_window['owner']} - {main_window['title']}")
-    
-    # Capture the window
-    img_ref = CG.CGWindowListCreateImage(
-        CG.CGRectNull,
-        QZ.kCGWindowListOptionIncludingWindow,
-        main_window['window_id'],
-        CG.kCGWindowImageBoundsIgnoreFraming
-    )
-    
-    if not img_ref:
+            break  # we found a capture-able window
+
+    # If none of the windows produced an image, raise error early
+    if not main_window or not img_ref:
         raise RuntimeError("Failed to capture window image")
-    
+
+    # Now we already have img_ref of the correct window; proceed to convert it
+
+    print(f"Capturing window: {main_window['owner']} - {main_window['title']}")
+
     # Convert to PIL Image
     height = CG.CGImageGetHeight(img_ref)
     width = CG.CGImageGetWidth(img_ref)
     rowbytes = CG.CGImageGetBytesPerRow(img_ref)
     data = CG.CGDataProviderCopyData(CG.CGImageGetDataProvider(img_ref))
-    
-    # Convert to numpy array and then to PIL Image
     arr = np.frombuffer(data, np.uint8).reshape(height, rowbytes // 4, 4)[:, :width, :3]
     img = Image.fromarray(arr)
-    
+
     # Save as PNG bytes
     buf = io.BytesIO()
     img.save(buf, "PNG")
