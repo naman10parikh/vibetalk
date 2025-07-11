@@ -54,10 +54,26 @@ def capture_cursor_window():
     if not cursor_windows:
         raise RuntimeError("No Cursor IDE windows found. Please make sure Cursor is running.")
     
-    # Try windows in z-order (frontmost first) until we successfully grab an image
+    # Determine active project keyword (current directory name)
+    project_keyword = os.path.basename(os.getcwd()).lower()
+
+    # Re-order windows so ones containing the project keyword in title come first
+    def window_priority(w):
+        title = w['title'].lower()
+        # Highest priority if project keyword present
+        if project_keyword and project_keyword in title:
+            return 0
+        # medium if title not empty (likely an open file)
+        if title not in ('', 'cursor'):
+            return 1
+        # lowest priority – generic welcome/untitled windows
+        return 2
+
+    cursor_windows.sort(key=window_priority)
+
+    # Iterate through re-ordered windows and attempt capture in z-order
     main_window = None
     img_ref = None
-
     for window in cursor_windows:
         w_id = window['window_id']
         img_ref = CG.CGWindowListCreateImage(
@@ -68,9 +84,8 @@ def capture_cursor_window():
         )
         if img_ref:
             main_window = window
-            break  # we found a capture-able window
+            break
 
-    # If none of the windows produced an image, raise error early
     if not main_window or not img_ref:
         raise RuntimeError("Failed to capture window image")
 
