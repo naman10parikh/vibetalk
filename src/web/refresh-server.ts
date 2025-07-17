@@ -47,7 +47,7 @@ const HTTP_PORT = process.env.HTTP_PORT ? parseInt(process.env.HTTP_PORT) : 3000
 const WS_PORT = process.env.REFRESH_PORT ? parseInt(process.env.REFRESH_PORT) : 3001;
 
 // Flush buffered status every 6 s to sound more natural
-const SUMMARY_FLUSH_MS = 6000;
+const SUMMARY_FLUSH_MS = 15000; // 15 seconds - allow time for meaningful updates to accumulate
 
 // Track last spoken summary per session to avoid repeats
 interface LastSummaryInfo { text: string; time: number; }
@@ -102,22 +102,44 @@ function broadcastToClients(message: any): void {
     }
   });
   
-  // Buffer low-level status + progress so we can speak a short summary later.
+  // Buffer only meaningful messages for spoken summaries - filter out routine status
   if ([ 'voice-status', 'progress', 'log' ].includes(message.type) && message.message) {
-    // Skip early microphone prompts – they should be visual only.
-    if (message.step && ['initializing', 'listening'].includes(message.step)) {
-      // No spoken summary for these, as they often become stale quickly.
-    } else {
-      const sid = message.sessionId ?? sessionId;
-      const st = (sessionState[sid] ||= { buffer: [], isCompleted: false });
-      const cleanMsg = stripEmoji(message.message);
-      // Skip repetitive elapsed timers
-      if (/^⏳ Monitoring file changes/.test(cleanMsg)) {
-        return;
-      }
+    // Skip early microphone prompts and routine steps
+    if (message.step && ['initializing', 'listening', 'processing', 'transcribing'].includes(message.step)) {
+      // No spoken summary for routine startup steps
+      return;
+    }
+    
+    const sid = message.sessionId ?? sessionId;
+    const st = (sessionState[sid] ||= { buffer: [], isCompleted: false });
+    const cleanMsg = stripEmoji(message.message);
+    
+    // Only buffer meaningful messages that deserve audio updates
+    const isMeaningful = (
+      // Errors or problems
+      /error|fail|❌/.test(cleanMsg) ||
+      // AI asking questions or waiting for input
+      /question|asking|what.*want|choose|select/i.test(cleanMsg) ||
+      // Important milestones
+      /complete|done|✅|success|finish/.test(cleanMsg) ||
+      // AI output captured (user might want to hear this)
+      message.type === 'ai-output' ||
+      // Changes detected (significant progress)
+      /changes detected|file.*changed|refresh/i.test(cleanMsg)
+    );
+    
+    // Skip routine monitoring, processing, and repetitive status messages
+    const isRoutine = (
+      /monitoring|processing|waiting|analyzing|working on|⏳|🔄/.test(cleanMsg) ||
+      /Monitoring file changes/.test(cleanMsg) ||
+      /Starting enhanced voice|AI-output polling/.test(cleanMsg)
+    );
+    
+    // Only buffer if meaningful and not routine
+    if (isMeaningful && !isRoutine) {
       st.buffer.push(cleanMsg);
 
-      // If no pending flush timer, schedule one. This prevents perpetual delay under heavy logging.
+      // If no pending flush timer, schedule one
       if (!st.timeout) {
         st.timeout = setTimeout(() => {
           st.timeout = undefined;
@@ -159,11 +181,16 @@ async function flushStatusSummary(sid: string) {
       const completion = await openaiClient.chat.completions.create({
         model: 'gpt-4o-mini',
         messages: [
-          { role: 'system', content: 'You are a professional developer. Convert status logs into a simple acknowledgment (2-4 words) like "Working on it" or just "Done" for completion. No technical details or excitement.' },
+          { role: 'system', content: 'You are a professional developer assistant. Only provide a brief update if there is meaningful progress or important information to communicate. For routine status updates like "processing" or "monitoring", respond with "SKIP" to avoid repetitive updates. Only speak for: errors, AI questions requiring input, significant milestones, or completion. Keep responses to 2-4 words when you do speak.' },
           { role: 'user', content: raw }
         ]
       });
       spoken = completion.choices[0]?.message?.content?.trim() || raw;
+      
+      // If GPT says to skip, don't speak
+      if (spoken.toUpperCase().includes('SKIP')) {
+        return;
+      }
     } catch (err) {
       console.error('❌ GPT summarisation failed:', err);
     }
@@ -171,9 +198,21 @@ async function flushStatusSummary(sid: string) {
 
   const now = Date.now();
   const last = lastSummary[sid];
-  if (last && spoken === last.text && now - last.time < 20000) {
-    return; // skip identical summary within 20s window
+  
+  // Enhanced duplicate detection - check for semantic similarity
+  if (last && now - last.time < 45000) { // Extended window to 45 seconds
+    // Check for exact match
+    if (spoken === last.text) {
+      return;
+    }
+    // Check for similar "working on it" type messages
+    const isWorkingMessage = /working|processing|analyzing|monitoring/i.test(spoken);
+    const wasWorkingMessage = /working|processing|analyzing|monitoring/i.test(last.text);
+    if (isWorkingMessage && wasWorkingMessage) {
+      return; // Skip similar working messages
+    }
   }
+  
   lastSummary[sid] = { text: spoken, time: now };
 
   const file = await generateSpeechAudio(spoken);
@@ -205,13 +244,13 @@ async function handleVoiceCommand(action: 'start' | 'stop', sessionId: string): 
       console.log(`🎤 Starting enhanced voice session: ${sessionId}`);
       isRecording = true;
       
-      // Start periodic summary interval (every 5s)
+      // Start periodic summary interval (every 35s) - reduced frequency for better UX
       if (!sessionIntervals[sessionId]) {
         sessionIntervals[sessionId] = setInterval(() => {
           if (sessionState[sessionId]?.buffer.length) {
             flushStatusSummary(sessionId);
           }
-        }, 11000);
+        }, 35000);
       }
       
       // Step 1: Initializing
@@ -452,7 +491,7 @@ function startConversationPolling(sessionId: string) {
     console.log(`AI-output: ${aiOut}`);
     // Log only new AI outputs
     broadcastToClients({ type: 'ai-output', message: aiOut, sessionId });
-  }, 11000); // every 2 seconds
+  }, 20000); // every 20 seconds - reduced frequency to avoid spam
 }
 
 function stopConversationPolling(sessionId: string) {
