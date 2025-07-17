@@ -16,6 +16,7 @@
     "refresh-server": "npm run build && node dist/web/refresh-server.js",
     "coordinator-server": "npm run build && node dist/web/coordinator-server.js",
     "test-decoupled": "npm run build && node dist/test-decoupled.js",
+    "test-reliability": "npm run build && node dist/scripts/test-reliability-fixes.js",
     "test": "npm run build && node dist/test.js",
     "demo": "npm run build && node dist/demo.js",
     "test-cursor": "npm run build && node -e \"const {CursorAutomator} = require('./dist/cursor/automator'); new CursorAutomator().testAutomation().then(console.log);\"",

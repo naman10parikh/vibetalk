@@ -56,7 +56,7 @@ const lastSummary: Record<string, LastSummaryInfo> = {};
 // ────────────────────────────────────────────────────────────────────────────────
 // Session-level status buffering so we can create short, spoken summaries instead
 // of dumping every low-level log line on the user.
-interface SessionState { buffer: string[]; timeout?: NodeJS.Timeout; }
+interface SessionState { buffer: string[]; timeout?: NodeJS.Timeout; isCompleted: boolean; }
 const sessionState: Record<string, SessionState> = {};
 
 // Helper: generate TTS for status updates and broadcast to clients
@@ -68,6 +68,7 @@ async function queueStatusSpeech(text: string, targetSessionId?: string) {
       broadcastToClients({
         type: 'status-audio',
         audioUrl: `/speech/${fileName}`,
+        fallbackText: text,
         sessionId: targetSessionId
       });
     }
@@ -109,7 +110,7 @@ function broadcastToClients(message: any): void {
       // No spoken summary for these, as they often become stale quickly.
     } else {
       const sid = message.sessionId ?? sessionId;
-      const st = (sessionState[sid] ||= { buffer: [] });
+      const st = (sessionState[sid] ||= { buffer: [], isCompleted: false });
       const cleanMsg = stripEmoji(message.message);
       // Skip repetitive elapsed timers
       if (/^⏳ Monitoring file changes/.test(cleanMsg)) {
@@ -143,6 +144,13 @@ console.log = (...args: any[]) => {
 async function flushStatusSummary(sid: string) {
   const st = sessionState[sid];
   if (!st || st.buffer.length === 0) return;
+  
+  // PRODUCTION FIX: Check if session is completed - don't flush if it is
+  if (st.isCompleted) {
+    console.log(`🔇 Skipping status flush - session ${sid} is completed`);
+    return;
+  }
+  
   const raw = st.buffer.join(' · ');
   st.buffer.length = 0;
 
@@ -152,7 +160,7 @@ async function flushStatusSummary(sid: string) {
       const completion = await openaiClient.chat.completions.create({
         model: 'gpt-4o-mini',
         messages: [
-          { role: 'system', content: 'You are a friendly developer buddy. Turn the following status logs into ONE super-concise, chill spoken update (<=12 words). Keep it casual and upbeat.' },
+          { role: 'system', content: 'You are a professional developer. Convert status logs into a simple acknowledgment (2-4 words) like "Working on it" or just "Done" for completion. No technical details or excitement.' },
           { role: 'user', content: raw }
         ]
       });
@@ -212,86 +220,67 @@ class EnhancedAutoRefresh {
         const files = changedStd.split('\n').filter(Boolean);
         const elapsed1 = ((Date.now() - startTime) / 1000).toFixed(1);
         broadcastToClients({ type: 'log', message: `[+${elapsed1}s] 📂 Files changed: ${files.join(', ') || 'none'}` });
-        broadcastToClients({ type: 'log', message: `[+${elapsed1}s] 📁 Change detected - starting enhanced rebuild...` });
         console.log('File change detected');
         this.lastMTime = st;
         this.building = true;
         
-        // Step 1: Notify of change detection
+        // IMMEDIATE FEEDBACK: Instantly notify users and start refresh coordination
         this.connections.forEach(ws => {
           if (ws.readyState === ws.OPEN) {
             ws.send(JSON.stringify({ 
               type: 'progress', 
               step: 'changes-detected',
-              message: '📁 Changes detected in source files',
-              progress: 25
-            }));
-          }
-        });
-        
-        await this.sleep(300);
-        
-        // Step 2: Building
-        this.connections.forEach(ws => {
-          if (ws.readyState === ws.OPEN) {
-            ws.send(JSON.stringify({ 
-              type: 'progress', 
-              step: 'building',
-              message: '🔨 Rebuilding project with your changes',
-              progress: 50
-            }));
-          }
-        });
-        
-        await execAsync('npm run build');
-        await this.sleep(200);
-        
-        // Step 3: Preparing refresh with audio coordination
-        this.connections.forEach(ws => {
-          if (ws.readyState === ws.OPEN) {
-            ws.send(JSON.stringify({ 
-              type: 'progress', 
-              step: 'preparing-refresh',
-              message: '🔄 Preparing to refresh your page',
-              progress: 75
-            }));
-          }
-        });
-        
-        await this.sleep(500);
-        
-        // Step 4: Coordinated refresh with audio delay
-        this.connections.forEach(ws => {
-          if (ws.readyState === ws.OPEN) {
-            ws.send(JSON.stringify({ 
-              type: 'progress', 
-              step: 'refreshing',
-              message: '✨ Refreshing page with changes',
+              message: '📁 Changes detected - updating now',
               progress: 100
             }));
           }
         });
         
-        await this.sleep(300);
+        // PARALLEL PROCESSING: Start build and refresh coordination simultaneously
+        const buildPromise = this.runBuildProcess();
+        const refreshPromise = this.coordinateRefresh();
         
-        // Final refresh with audio coordination
-        this.connections.forEach(ws => {
-          if (ws.readyState === ws.OPEN) {
-            ws.send(JSON.stringify({ 
-              type: 'refresh-now',
-              allowAudioDelay: true // Signal to widget to wait for audio
-            }));
-          }
-        });
+        // Wait for both to complete
+        try {
+          await Promise.all([buildPromise, refreshPromise]);
+          const elapsed2 = ((Date.now() - startTime) / 1000).toFixed(1);
+          broadcastToClients({ type: 'log', message: `[+${elapsed2}s] ✅ Enhanced rebuild complete` });
+        } catch (error) {
+          console.error('❌ Parallel processing error:', error);
+        }
         
-        const elapsed2 = ((Date.now() - startTime) / 1000).toFixed(1);
-        broadcastToClients({ type: 'log', message: `[+${elapsed2}s] ✅ Enhanced rebuild complete` });
         this.building = false;
       }
     } catch (error) {
       console.error('❌ Enhanced auto-refresh error:', error);
       this.building = false;
     }
+  }
+  
+  private async runBuildProcess(): Promise<void> {
+    // Run build in background - don't block refresh
+    try {
+      await execAsync('npm run build');
+    } catch (error) {
+      console.error('❌ Build process failed:', error);
+    }
+  }
+  
+  private async coordinateRefresh(): Promise<void> {
+    // PRODUCTION FIX: Immediate and reliable refresh coordination
+    console.log('🔄 COORDINATING REFRESH: Sending refresh-now to all clients');
+    let refreshCount = 0;
+    this.connections.forEach(ws => {
+      if (ws.readyState === ws.OPEN) {
+        ws.send(JSON.stringify({ 
+          type: 'refresh-now',
+          message: 'File changes detected - refreshing now',
+          timestamp: Date.now()
+        }));
+        refreshCount++;
+      }
+    });
+    console.log(`📡 Sent refresh signal to ${refreshCount} connected clients`);
   }
   
   private sleep(ms: number): Promise<void> {
@@ -502,16 +491,33 @@ async function handleVoiceCommand(action: 'start' | 'stop', sessionId: string): 
           type: 'summary',
           summary: summaryText,
           audioUrl: audioFileName ? `/speech/${audioFileName}` : undefined,
+          fallbackText: summaryText,
           sessionId
         });
         console.log(`Summary: ${summaryText}`);
         
-        // Auto-restart the assistant for the next command after a short delay
-        setTimeout(() => {
-          if (!isRecording) {
-            handleVoiceCommand('start', sessionId);
+        // Mark session as completed and stop all intervals
+        if (sessionState[sessionId]) {
+          sessionState[sessionId].isCompleted = true;
+          if (sessionState[sessionId].timeout) {
+            clearTimeout(sessionState[sessionId].timeout);
+            sessionState[sessionId].timeout = undefined;
           }
-        }, 1200); // 1.2s delay to avoid overlap
+        }
+        
+        // Clear session interval to stop further status summaries
+        if (sessionIntervals[sessionId]) {
+          clearInterval(sessionIntervals[sessionId]);
+          delete sessionIntervals[sessionId];
+        }
+        
+        // Stop conversation polling for this session
+        stopConversationPolling(sessionId);
+        
+        // PRODUCTION FIX: DO NOT auto-restart - wait for user to manually start next command
+        // The assistant should remain silent until user initiates the next voice command
+        console.log('🔇 Session completed - assistant will remain silent until next manual start');
+        isRecording = false;
         
       } else {
         broadcastToClients({ 
@@ -635,28 +641,123 @@ function getChatGPTStyleWidget(): string {
     var currentStep = '';
     var currentSessionId = null;
 
-    // 🔊 Simple audio queue to avoid overlapping voices
+    // 🔊 Enhanced audio queue with autoplay handling and fallbacks
     var audioQueue = [];
     var isPlayingAudio = false;
+    var hasUserInteracted = false;
+    var audioContext = null;
+    var pendingRefresh = false;
+    var allowAudioDelay = false;
+    var audioDelayTimeout = null;
+    var fallbackToSpeechSynthesis = false;
+    var currentFallbackText = null;
+    var preloadedAudio = new Map(); // Cache for preloaded audio
+    var maxPreloadCache = 5; // Maximum number of audio files to preload
+
+    // Initialize audio system after user interaction
+    function initializeAudio() {
+      if (!hasUserInteracted) {
+        hasUserInteracted = true;
+        logAudio('User interaction detected - audio system enabled');
+        
+        // Check autoplay policy using the new API if available
+        if (navigator.getAutoplayPolicy) {
+          try {
+            var policy = navigator.getAutoplayPolicy('mediaelement');
+            logAudio('Autoplay policy for media elements: ' + policy);
+          } catch (e) {
+            logAudio('Error checking autoplay policy: ' + e.message);
+          }
+        }
+        
+        // Try to initialize Web Audio API
+        try {
+          audioContext = new (window.AudioContext || window.webkitAudioContext)();
+          if (audioContext.state === 'suspended') {
+            audioContext.resume();
+          }
+        } catch (e) {
+          logAudio('Web Audio API not supported');
+        }
+        
+        // Process any queued audio
+        if (audioQueue.length > 0) {
+          playNextAudio();
+        }
+      }
+    }
+
     // DEBUG helpers – log all audio events
     function logAudio(msg) {
       console.log('[VibeTalk-Audio]', msg);
     }
 
-    var pendingRefresh = false; // set when server asks page to refresh
-    var allowAudioDelay = false; // allow audio to delay refresh
-    var audioDelayTimeout = null; // timeout for audio delay
+    // Audio preloading helpers
+    function preloadAudio(url) {
+      if (preloadedAudio.has(url)) {
+        return Promise.resolve(preloadedAudio.get(url));
+      }
+      
+      return new Promise(function(resolve, reject) {
+        var audio = new Audio(url);
+        audio.preload = 'auto';
+        
+        var loadTimeout = setTimeout(function() {
+          logAudio('Preload timeout for: ' + url);
+          reject(new Error('Preload timeout'));
+        }, 8000);
+        
+        audio.oncanplaythrough = function() {
+          clearTimeout(loadTimeout);
+          logAudio('Preloaded: ' + url);
+          
+          // Manage cache size
+          if (preloadedAudio.size >= maxPreloadCache) {
+            var oldestKey = preloadedAudio.keys().next().value;
+            preloadedAudio.delete(oldestKey);
+            logAudio('Removed from cache: ' + oldestKey);
+          }
+          
+          preloadedAudio.set(url, audio);
+          resolve(audio);
+        };
+        
+        audio.onerror = function(err) {
+          clearTimeout(loadTimeout);
+          logAudio('Preload failed: ' + url);
+          reject(err);
+        };
+        
+        audio.load();
+      });
+    }
 
     // Audio queue helpers ---------------------------------------------------
-    function enqueueAudio(url) {
+    function enqueueAudio(url, fallbackText) {
       if (!url) return;
+      
       // Keep queue from growing indefinitely
-      if (audioQueue.length > 5) {
+      if (audioQueue.length > 8) {
         logAudio('Queue full – dropping oldest');
         audioQueue.shift();
       }
-      audioQueue.push(url);
-      playNextAudio();
+      
+      logAudio('Enqueueing: ' + url + (fallbackText ? ' (with fallback)' : ''));
+      audioQueue.push({ url: url, fallbackText: fallbackText });
+      
+      // Preload this audio file
+      if (hasUserInteracted) {
+        preloadAudio(url).catch(function(err) {
+          logAudio('Preload failed for ' + url + ': ' + err.message);
+        });
+      }
+      
+      // Only start playing if user has interacted
+      if (hasUserInteracted) {
+        playNextAudio();
+      } else {
+        logAudio('Waiting for user interaction to play audio');
+      }
     }
 
     function maybeReload() {
@@ -671,69 +772,203 @@ function getChatGPTStyleWidget(): string {
         clearTimeout(audioDelayTimeout);
       }
       
-      logAudio('Scheduling delayed refresh (3s) to allow audio completion');
-      // Wait for audio to finish, then refresh
+      logAudio('Scheduling delayed refresh (4s) to allow audio completion');
       audioDelayTimeout = setTimeout(() => {
         logAudio('Audio delay timeout – performing refresh');
         location.reload();
-      }, 3000); // 3 second delay to allow audio to complete
+      }, 4000); // 4 second delay to allow audio to complete
     }
 
     function playNextAudio() {
       if (isPlayingAudio || audioQueue.length === 0) return;
-      // If tab is hidden wait until visible
-      if (document.hidden) {
-        logAudio('Tab hidden – waiting for visibilitychange');
-        document.addEventListener('visibilitychange', playNextAudio, { once: true });
+      
+      // Check if user has interacted first
+      if (!hasUserInteracted) {
+        logAudio('Cannot play audio without user interaction');
         return;
       }
-      var url = audioQueue.shift();
-      var audio = new Audio(url);
-      isPlayingAudio = true;
-
-      audio.oncanplaythrough = function() {
-        logAudio('Playing ' + url);
-        audio.play().catch(function(err) {
-          if (err && err.name === 'NotAllowedError') {
-            logAudio('Play blocked – will retry when visible');
-            audioQueue.unshift(url); // put back at front
-            isPlayingAudio = false;
-            document.addEventListener('visibilitychange', playNextAudio, { once: true });
-          } else {
-            console.error('[VibeTalk-Audio] play failed:', err);
-            isPlayingAudio = false;
+      
+      // If tab is hidden, wait until visible
+      if (document.hidden) {
+        logAudio('Tab hidden – waiting for visibilitychange');
+        document.addEventListener('visibilitychange', function() {
+          if (!document.hidden) {
             playNextAudio();
           }
+        }, { once: true });
+        return;
+      }
+      
+              var audioItem = audioQueue.shift();
+        var url = audioItem.url;
+        currentFallbackText = audioItem.fallbackText;
+        logAudio('Attempting to play: ' + url);
+        
+        // Check if audio file exists first
+        checkAudioAvailability(url).then(function(isAvailable) {
+          if (isAvailable) {
+            tryMp3Playback(url);
+          } else {
+            logAudio('Audio file not available - using fallback immediately');
+            tryFallbackPlayback(url, currentFallbackText);
+          }
+        }).catch(function(err) {
+          logAudio('Error checking audio availability: ' + err.message);
+          // Try MP3 playback anyway
+          tryMp3Playback(url);
         });
+    }
+
+    function tryMp3Playback(url, retryCount) {
+      retryCount = retryCount || 0;
+      isPlayingAudio = true;
+      
+      // Use preloaded audio if available
+      if (preloadedAudio.has(url)) {
+        var audio = preloadedAudio.get(url);
+        logAudio('Using preloaded audio: ' + url);
+        // Remove from cache since we're using it
+        preloadedAudio.delete(url);
+      } else {
+        var audio = new Audio(url);
+        // Preload the audio
+        audio.preload = 'auto';
+        audio.load();
+        logAudio('Loading fresh audio: ' + url);
+      }
+
+      var playbackTimeout = setTimeout(function() {
+        logAudio('Playback timeout for ' + url + ' (attempt ' + (retryCount + 1) + ')');
+        audio.pause();
+        isPlayingAudio = false;
+        
+        // Retry once before falling back
+        if (retryCount < 1) {
+          logAudio('Retrying MP3 playback...');
+          setTimeout(function() {
+            tryMp3Playback(url, retryCount + 1);
+          }, 1000);
+        } else {
+          logAudio('MP3 playback failed after retries - trying fallback');
+          tryFallbackPlayback(url, currentFallbackText);
+        }
+      }, 8000); // 8 second timeout
+
+      audio.oncanplaythrough = function() {
+        clearTimeout(playbackTimeout);
+        logAudio('Ready to play: ' + url);
+        
+        audio.play().then(function() {
+          logAudio('Playing: ' + url);
+                 }).catch(function(err) {
+           clearTimeout(playbackTimeout);
+           logAudio('MP3 playback failed: ' + err.message + ' - trying fallback');
+           isPlayingAudio = false;
+           tryFallbackPlayback(url, currentFallbackText);
+         });
       };
 
-      audio.onended = function() {
-        logAudio('Ended ' + url);
-        isPlayingAudio = false;
-        playNextAudio();
-        
-        // If we have a pending refresh with audio delay, check if we should refresh now
-        if (pendingRefresh && allowAudioDelay && audioQueue.length === 0) {
-          logAudio('Audio completed – performing delayed refresh');
-          location.reload();
-        } else {
-          maybeReload();
+              audio.onended = function() {
+          clearTimeout(playbackTimeout);
+          logAudio('Ended: ' + url);
+          isPlayingAudio = false;
+          
+          // Brief pause between audio clips
+          setTimeout(function() {
+            playNextAudio();
+          }, 200);
+          
+          // Handle refresh logic
+          if (pendingRefresh && allowAudioDelay && audioQueue.length === 0) {
+            logAudio('Audio completed – performing delayed refresh');
+            setTimeout(function() { location.reload(); }, 500);
+          } else {
+            maybeReload();
+          }
+        };
+
+        // Preload next audio in queue while current is playing
+        if (audioQueue.length > 0) {
+          var nextAudioItem = audioQueue[0];
+          preloadAudio(nextAudioItem.url).catch(function(err) {
+            logAudio('Failed to preload next audio: ' + err.message);
+          });
         }
-      };
 
       audio.onerror = function(err) {
-        console.error('[VibeTalk-Audio] error:', err);
+        clearTimeout(playbackTimeout);
+        logAudio('MP3 error: ' + (err.message || 'Unknown error') + ' - trying fallback');
+        isPlayingAudio = false;
+        tryFallbackPlayback(url, currentFallbackText);
+      };
+
+      audio.onloadstart = function() {
+        logAudio('Loading: ' + url);
+      };
+    }
+
+    function tryFallbackPlayback(url, fallbackText) {
+      // Use provided fallback text or generic fallback
+      fallbackText = fallbackText || 'Audio message ready';
+      
+      // Try to get text from server or use Speech Synthesis as fallback
+      if (window.speechSynthesis) {
+        logAudio('Using Speech Synthesis fallback');
+        
+        // Initialize speech synthesis with best available voice
+        initializeSpeechSynthesis().then(function(voice) {
+          var utterance = new SpeechSynthesisUtterance(fallbackText);
+          utterance.rate = 1.1;
+          utterance.volume = 0.9;
+          utterance.pitch = 1.0;
+          
+          if (voice) {
+            utterance.voice = voice;
+            logAudio('Using voice: ' + voice.name);
+          }
+          
+          utterance.onstart = function() {
+            logAudio('Speech synthesis started: "' + fallbackText.substring(0, 50) + '..."');
+            isPlayingAudio = true;
+          };
+          
+          utterance.onend = function() {
+            logAudio('Speech synthesis ended');
+            isPlayingAudio = false;
+            setTimeout(function() {
+              playNextAudio();
+            }, 200);
+            
+            if (pendingRefresh && allowAudioDelay && audioQueue.length === 0) {
+              logAudio('Fallback audio completed – performing delayed refresh');
+              setTimeout(function() { location.reload(); }, 500);
+            } else {
+              maybeReload();
+            }
+          };
+          
+          utterance.onerror = function(err) {
+            logAudio('Speech synthesis error: ' + err.error);
+            isPlayingAudio = false;
+            playNextAudio();
+          };
+          
+          // Clear any existing utterances and speak
+          window.speechSynthesis.cancel();
+          // Small delay to ensure cancel is processed
+          setTimeout(function() {
+            window.speechSynthesis.speak(utterance);
+          }, 100);
+        }).catch(function(err) {
+          logAudio('Speech synthesis initialization failed: ' + err.message);
+          isPlayingAudio = false;
+          playNextAudio();
+        });
+      } else {
+        logAudio('No fallback audio available - skipping');
         isPlayingAudio = false;
         playNextAudio();
-        
-        // If we have a pending refresh with audio delay, check if we should refresh now
-        if (pendingRefresh && allowAudioDelay && audioQueue.length === 0) {
-          logAudio('Audio error – performing delayed refresh');
-          location.reload();
-        } else {
-          maybeReload();
-        }
-      };
+      }
     }
 
     function clearAudioQueue() {
@@ -742,6 +977,122 @@ function getChatGPTStyleWidget(): string {
         clearTimeout(audioDelayTimeout);
         audioDelayTimeout = null;
       }
+      if (isPlayingAudio && window.speechSynthesis) {
+        window.speechSynthesis.cancel();
+      }
+      isPlayingAudio = false;
+    }
+
+    // Check if audio file is available before trying to play
+    function checkAudioAvailability(url) {
+      return new Promise(function(resolve, reject) {
+        var xhr = new XMLHttpRequest();
+        xhr.open('HEAD', url, true);
+        xhr.timeout = 5000; // 5 second timeout
+        
+        xhr.onload = function() {
+          if (xhr.status >= 200 && xhr.status < 300) {
+            resolve(true);
+          } else {
+            resolve(false);
+          }
+        };
+        
+        xhr.onerror = function() {
+          resolve(false);
+        };
+        
+        xhr.ontimeout = function() {
+          resolve(false);
+        };
+        
+        xhr.send();
+      });
+    }
+
+    // Initialize speech synthesis with best available voice
+    var speechSynthesisReady = false;
+    var preferredVoice = null;
+    
+    function initializeSpeechSynthesis() {
+      return new Promise(function(resolve, reject) {
+        if (!window.speechSynthesis) {
+          reject(new Error('Speech synthesis not supported'));
+          return;
+        }
+        
+        if (speechSynthesisReady && preferredVoice) {
+          resolve(preferredVoice);
+          return;
+        }
+        
+        function loadVoices() {
+          var voices = window.speechSynthesis.getVoices();
+          
+          if (voices.length === 0) {
+            // Voices not loaded yet, wait a bit
+            setTimeout(loadVoices, 100);
+            return;
+          }
+          
+          // Preference order: English voices, then any neural/premium voices
+          var preferredVoiceNames = [
+            'Samantha', // macOS Samantha (high quality)
+            'Alex', // macOS Alex
+            'Google US English', // Chrome
+            'Microsoft Zira - English (United States)', // Edge
+            'Karen', // macOS Karen (Australian)
+            'Veena' // macOS Veena (Indian)
+          ];
+          
+          // First try preferred voices
+          for (var i = 0; i < preferredVoiceNames.length; i++) {
+            var voice = voices.find(function(v) {
+              return v.name === preferredVoiceNames[i];
+            });
+            if (voice) {
+              preferredVoice = voice;
+              speechSynthesisReady = true;
+              logAudio('Selected preferred voice: ' + voice.name);
+              resolve(voice);
+              return;
+            }
+          }
+          
+          // Fallback: find any English voice
+          var englishVoice = voices.find(function(v) {
+            return v.lang.startsWith('en');
+          });
+          
+          if (englishVoice) {
+            preferredVoice = englishVoice;
+            speechSynthesisReady = true;
+            logAudio('Selected English voice: ' + englishVoice.name);
+            resolve(englishVoice);
+          } else {
+            // Use default voice
+            preferredVoice = voices[0] || null;
+            speechSynthesisReady = true;
+            logAudio('Using default voice: ' + (voices[0] ? voices[0].name : 'none'));
+            resolve(preferredVoice);
+          }
+        }
+        
+        // Load voices immediately or wait for the event
+        if (window.speechSynthesis.getVoices().length > 0) {
+          loadVoices();
+        } else {
+          window.speechSynthesis.onvoiceschanged = loadVoices;
+          // Fallback timeout
+          setTimeout(function() {
+            if (!speechSynthesisReady) {
+              logAudio('Voice loading timeout - using default');
+              speechSynthesisReady = true;
+              resolve(null);
+            }
+          }, 2000);
+        }
+      });
     }
 
     // Main container - ChatGPT style
@@ -894,27 +1245,20 @@ function getChatGPTStyleWidget(): string {
           break;
         case 'status-audio':
           if (message.audioUrl) {
-            enqueueAudio(message.audioUrl);
+            enqueueAudio(message.audioUrl, message.fallbackText);
           }
           break;
         case 'assistant':
           handleAssistant(message);
           break;
         case 'refresh-now':
-          pendingRefresh = true;
-          allowAudioDelay = message.allowAudioDelay || false;
+          // PRODUCTION FIX: Always refresh immediately when requested
+          logAudio('REFRESH TRIGGERED: File changes detected, refreshing now');
           showRefreshAnimation();
-          
-          // If audio delay is allowed and we have audio playing, schedule delayed refresh
-          if (allowAudioDelay && (isPlayingAudio || audioQueue.length > 0)) {
-            logAudio('Audio playing – scheduling delayed refresh');
-            updateStatus('🎵 Waiting for audio to finish...', '🎵', '#8b5cf6');
-            scheduleRefreshWithAudioDelay();
-          } else {
-            // No audio playing, refresh immediately
-            logAudio('No audio playing – refreshing immediately');
-            maybeReload();
-          }
+          // Force immediate refresh - no conditions, no delays
+          setTimeout(() => {
+            location.reload();
+          }, 100); // Brief delay to show animation
           break;
       }
     }
@@ -985,7 +1329,7 @@ function getChatGPTStyleWidget(): string {
     
     function handleSummary(message) {
       if (message.audioUrl) {
-        enqueueAudio(message.audioUrl);
+        enqueueAudio(message.audioUrl, message.fallbackText || message.summary);
       } else if (window.speechSynthesis && message.summary) {
         var utter = new window.SpeechSynthesisUtterance(message.summary);
         utter.rate = 1.05;
@@ -997,7 +1341,7 @@ function getChatGPTStyleWidget(): string {
     // Handle friendly assistant replies
     function handleAssistant(message) {
       if (message.audioUrl) {
-        enqueueAudio(message.audioUrl);
+        enqueueAudio(message.audioUrl, message.fallbackText || message.text);
       } else if (window.speechSynthesis && message.text) {
         var utter = new window.SpeechSynthesisUtterance(message.text);
         utter.rate = 1.05;
@@ -1040,6 +1384,9 @@ function getChatGPTStyleWidget(): string {
     
     // Click handler for the entire bar
     mainBar.onclick = function() {
+      // Initialize audio system on first user interaction
+      initializeAudio();
+      
       if (!recording) {
         recording = true;
         currentSessionId = 'session_' + Date.now();

@@ -56,7 +56,7 @@ const lastSummary: Record<string, LastSummaryInfo> = {};
 // ────────────────────────────────────────────────────────────────────────────────
 // Session-level status buffering so we can create short, spoken summaries instead
 // of dumping every low-level log line on the user.
-interface SessionState { buffer: string[]; timeout?: NodeJS.Timeout; }
+interface SessionState { buffer: string[]; timeout?: NodeJS.Timeout; isCompleted: boolean; }
 const sessionState: Record<string, SessionState> = {};
 
 // Helper: generate TTS for status updates and broadcast to clients
@@ -109,7 +109,7 @@ function broadcastToClients(message: any): void {
       // No spoken summary for these, as they often become stale quickly.
     } else {
       const sid = message.sessionId ?? sessionId;
-      const st = (sessionState[sid] ||= { buffer: [] });
+      const st = (sessionState[sid] ||= { buffer: [], isCompleted: false });
       const cleanMsg = stripEmoji(message.message);
       // Skip repetitive elapsed timers
       if (/^⏳ Monitoring file changes/.test(cleanMsg)) {
@@ -143,6 +143,13 @@ console.log = (...args: any[]) => {
 async function flushStatusSummary(sid: string) {
   const st = sessionState[sid];
   if (!st || st.buffer.length === 0) return;
+  
+  // PRODUCTION FIX: Check if session is completed - don't flush if it is
+  if (st.isCompleted) {
+    console.log(`🔇 Skipping status flush - session ${sid} is completed`);
+    return;
+  }
+  
   const raw = st.buffer.join(' · ');
   st.buffer.length = 0;
 
@@ -152,7 +159,7 @@ async function flushStatusSummary(sid: string) {
       const completion = await openaiClient.chat.completions.create({
         model: 'gpt-4o-mini',
         messages: [
-          { role: 'system', content: 'You are a friendly developer buddy. Turn the following status logs into ONE super-concise, chill spoken update (<=12 words). Keep it casual and upbeat.' },
+          { role: 'system', content: 'You are a professional developer. Convert status logs into a simple acknowledgment (2-4 words) like "Working on it" or just "Done" for completion. No technical details or excitement.' },
           { role: 'user', content: raw }
         ]
       });
@@ -384,6 +391,29 @@ async function handleVoiceCommand(action: 'start' | 'stop', sessionId: string): 
           sessionId
         });
         console.log(`Summary: ${summaryText}`);
+        
+        // Mark session as completed and stop all intervals
+        if (sessionState[sessionId]) {
+          sessionState[sessionId].isCompleted = true;
+          if (sessionState[sessionId].timeout) {
+            clearTimeout(sessionState[sessionId].timeout);
+            sessionState[sessionId].timeout = undefined;
+          }
+        }
+        
+        // Clear session interval to stop further status summaries
+        if (sessionIntervals[sessionId]) {
+          clearInterval(sessionIntervals[sessionId]);
+          delete sessionIntervals[sessionId];
+        }
+        
+        // Stop conversation polling for this session
+        stopConversationPolling(sessionId);
+        
+        // PRODUCTION FIX: DO NOT auto-restart - wait for user to manually start next command
+        // The assistant should remain silent until user initiates the next voice command
+        console.log('🔇 Session completed - assistant will remain silent until next manual start');
+        isRecording = false;
         
       } else {
         broadcastToClients({ 
@@ -659,23 +689,49 @@ class AudioAwareAutoRefresh {
         console.log(`[+${elapsed}s] 📁 File change detected - running build and refreshing browser`);
         this.lastMTime = st;
         this.building = true;
-        // Run build step
-        await execAsync('npm run build');
-        // Now trigger the refresh
-        this.connections.forEach(ws => {
-          if (ws.readyState === ws.OPEN) {
-            ws.send(JSON.stringify({ 
-              type: 'refresh-now',
-              message: 'Refreshing page with changes',
-              timestamp: Date.now()
-            }));
-          }
-        });
+        
+        // IMMEDIATE FEEDBACK: Trigger refresh coordination immediately
+        const refreshPromise = this.triggerRefresh();
+        const buildPromise = this.runBuild();
+        
+        // Run both in parallel for fastest response
+        try {
+          await Promise.all([refreshPromise, buildPromise]);
+        } catch (error) {
+          console.error('❌ Parallel processing error:', error);
+        }
+        
         this.building = false;
       }
     } catch (error) {
       console.error('❌ Audio-aware auto-refresh error:', error);
       this.building = false;
+    }
+  }
+  
+  private async triggerRefresh(): Promise<void> {
+    // PRODUCTION FIX: Immediate and reliable refresh trigger
+    console.log('🔄 TRIGGERING REFRESH: Sending refresh-now to all clients');
+    let refreshCount = 0;
+    this.connections.forEach(ws => {
+      if (ws.readyState === ws.OPEN) {
+        ws.send(JSON.stringify({ 
+          type: 'refresh-now',
+          message: 'File changes detected - refreshing now',
+          timestamp: Date.now()
+        }));
+        refreshCount++;
+      }
+    });
+    console.log(`📡 Sent refresh signal to ${refreshCount} connected clients`);
+  }
+  
+  private async runBuild(): Promise<void> {
+    // Run build in background
+    try {
+      await execAsync('npm run build');
+    } catch (error) {
+      console.error('❌ Build failed:', error);
     }
   }
   
@@ -984,13 +1040,13 @@ function getEnhancedWidget(): string {
           handleAssistant(message);
           break;
         case 'refresh-now':
-          pendingRefresh = true;
+          // PRODUCTION FIX: Always refresh immediately when requested
+          logAudio('REFRESH TRIGGERED: File changes detected, refreshing now');
           showRefreshAnimation();
-          
-          // In decoupled architecture, refresh immediately
-          // Audio coordination is handled by the audio server independently
-          logAudio('Refreshing immediately (decoupled architecture)');
-          location.reload();
+          // Force immediate refresh - no conditions, no delays
+          setTimeout(() => {
+            location.reload();
+          }, 100); // Brief delay to show animation
           break;
       }
     }
